@@ -1,0 +1,4 @@
+# DKSH variants beyond ds_dksh's default set that Deadpool asks for on the console: each line is the SPIR-V
+# fingerprint (HuellaSpirv), specialization value and variant (a vertex shader's kept interpolators, a pixel shader's
+# 1 for early depth), in hex. Made from console logs by dksh_variants.py; build_library.sh (VARIANTES=...) compiles
+# them into shadercache_dksh.bin, so the console does not compile them while the game runs.

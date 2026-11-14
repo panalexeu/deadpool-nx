@@ -1,0 +1,30 @@
+# deadpool.toml - next to deadpool.nro on the SD card (sdmc:/switch/deadpool/).
+
+# Handheld GPU clock requested from the system (0 = leave it, 384, 460): official Horizon modes, not an overclock.
+deadpool_switch_gpu_mhz = 460
+
+# Handheld CPU clock kept by the NRO (0 = leave it at 1020, 1224, 1581, 1785). 1785 MHz is the console's own boost
+# clock, set through clkrst as sys-clk does. Uses more battery.
+deadpool_switch_cpu_mhz = 1785
+
+# Scene resolution at startup: 720 (the game's 1280x720) or 540 (960x540, scaled to the screen). Game patch 3, as
+# gears2-nx 1.1.0's 540p mode, plus a 960x540 video mode for the UI and back buffer.
+deadpool_resolution = 540
+
+# Never compile a shader variant while playing: one missing from the DKSH cache keeps drawing with the general
+# variant (the same image). A runtime compile took a game core for 30+ s and the sound crackled.
+nfsmw_dk_compilar_variantes = false
+
+# Occlusion: when the game waits for a visibility result the GPU has not counted yet, do not answer with the previous
+# frame's result (true): objects showed up a frame late or blinked at edges. The wait sleeps instead of spinning anyway.
+deadpool_oclusion_anterior = false
+
+# Skip the depth prepass (gears2-nx's rule): drawn, the base pass's depth misses it by a rounding difference between
+# two separately compiled vertex shaders, and the world turns red.
+deadpool_sin_prepaso_z = true
+
+# Also skip the masked (alpha-tested) depth prepass: drawn, windows, rubbish and debris showed old frames.
+deadpool_sin_prepaso_enmascarado = true
+# The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
+# window the weapon was half replaced by the blurred background and looked see-through.
+deadpool_dof_arma = true

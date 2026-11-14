@@ -1,0 +1,282 @@
+From 734eb8badc80c621eac59bb496d2e58344ee1d55 Mon Sep 17 00:00:00 2001
+From: Oleksii Horchynskyi <pan.alexeu@gmail.com>
+Date: Sat, 14 Nov 2026 10:09:44 +0200
+Subject: [PATCH] deko3d: each shader's prepared info kept in
+ cache/info_shaders.bin; first-use reads counted
+
+A pixel shader's first draw converted its whole SPIR-V to GLSL just to learn the interpolators it reads (InfoDe), 5-10 ms
+on the ring thread, every session: Singularity's lightning, ~150 shaders drawn for the first time in one frame, froze for
+a second. InfoDe's results (SPIR-V fingerprint, specialization mask, interpolators), keyed by the container fingerprint,
+are saved in cache/info_shaders.bin and loaded at start; a PC tool can write the file for a whole shader library.
+PrimerosUsos tells how many compiled shaders a long frame read from the cache file and how long the first-time work took.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CGstJFihyJYNUGR3QC7gUu
+---
+ include/rex/ui/deko3d/cache_dksh.h |  5 +++
+ include/rex/x360/deko/render.h     |  9 +++++
+ include/rex/x360/destinos.h        |  6 +++
+ src/ui/deko3d/cache_dksh.cpp       |  6 +++
+ src/x360/deko/destinos.cpp         | 60 ++++++++++++++++++++++++++++++
+ src/x360/deko/dibujos.cpp          | 26 ++++++++++++-
+ 6 files changed, 111 insertions(+), 1 deletion(-)
+
+diff --git a/include/rex/ui/deko3d/cache_dksh.h b/include/rex/ui/deko3d/cache_dksh.h
+index 0cc6e9e..d253a53 100644
+--- a/include/rex/ui/deko3d/cache_dksh.h
++++ b/include/rex/ui/deko3d/cache_dksh.h
+@@ -24,6 +24,7 @@
+ #include <cstdio>
+ #include <filesystem>
+ #include <map>
++#include <atomic>
+ #include <mutex>
+ #include <span>
+ #include <string>
+@@ -59,6 +60,9 @@ class CacheDksh {
+   const std::vector<uint8_t>* Buscar(const Clave& clave) const;
+   void Anadir(const Clave& clave, std::vector<uint8_t> dksh);
+   size_t size() const { return entradas_.size() + indice_.size(); }
++  // Entries read from the file so far (CargarIndice), and the time it took: the first use of each one.
++  uint64_t lecturas() const { return lecturas_.load(std::memory_order_relaxed); }
++  uint64_t lecturas_ns() const { return lecturas_ns_.load(std::memory_order_relaxed); }
+   const std::map<Clave, std::vector<uint8_t>>& entradas() const { return entradas_; }
+   // Takes the entries out (the cache is left empty): merging a large cache into another without copying it.
+   std::map<Clave, std::vector<uint8_t>> Extraer() { return std::move(entradas_); }
+@@ -75,6 +79,7 @@ class CacheDksh {
+   std::filesystem::path ruta_;
+   mutable std::FILE* archivo_ = nullptr;
+   mutable std::mutex mutex_;
++  mutable std::atomic<uint64_t> lecturas_{0}, lecturas_ns_{0};
+ 
+  public:
+   CacheDksh() = default;
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index c7f0cb1..01a2281 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -183,6 +183,7 @@ class RenderDk final : public DestinosNativos {
+   bool Dibujar(const PeticionDibujo& peticion) override;  // nfsmw_dk_dibujos.cpp
+   void PedirVolcado() override { volcado_pedido_ = true; }
+   bool FusionarProfundidadPosterior() override;
++  void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const override;
+   EstadisticasDibujos EstadisticasDeDibujos() const override;
+   void EsperarSubidas() override {}  // vertices are copied on the ring thread, before Dibujar returns
+   uint64_t CopiasProfundidad() const override { return copias_profundidad_; }
+@@ -463,6 +464,11 @@ class RenderDk final : public DestinosNativos {
+     bool interpoladores_listos = false;
+   };
+   InfoShader& InfoDe(const EntradaShader& entrada);
++  // InfoDe's results from earlier sessions, by container fingerprint (cache/info_shaders.bin): a pixel shader's first
++  // use converted its whole SPIR-V to GLSL only to learn its interpolators, ~5-10 ms each on the ring thread (most of
++  // the lightning freeze once the reads were gone). info_sucia_: new entries since the last save.
++  std::unordered_map<uint64_t, InfoShader> info_guardada_;
++  bool info_sucia_ = false;
+   void RecogerCompilaciones();
+ 
+   // ---- Textures, samplers and descriptors (nfsmw_dk_texturas.cpp)
+@@ -635,6 +641,9 @@ class RenderDk final : public DestinosNativos {
+   deko::CacheDksh cache_consola_;
+   bool cache_sucia_ = false;
+   std::thread guardando_;  // writes the cache file (GuardarCacheSiHaceFalta)
++  std::atomic<uint64_t> info_ns_{0};  // InfoDe's first-time work (SPIR-V to GLSL for the interpolators)
++  uint64_t info_guardada_ns_ = 0;  // last write of cache/info_shaders.bin (every 30 s at most while playing)
++  void GuardarInfoSiHaceFalta(bool ya);
+   uint64_t cache_guardada_ns_ = 0;
+   uint32_t compilados_en_el_acto_ = 0, compilados_en_fondo_ = 0, aciertos_cache_ = 0;
+   // Background compiles (the exact vertex shader variant, while the one with every interpolator draws). The
+diff --git a/include/rex/x360/destinos.h b/include/rex/x360/destinos.h
+index 3b37907..4847b19 100644
+--- a/include/rex/x360/destinos.h
++++ b/include/rex/x360/destinos.h
+@@ -121,6 +121,12 @@ class DestinosNativos {
+   // larger value): what was drawn there after the resolve (a first-person weapon after its own depth clear) reaches
+   // the post-processing that samples the texture. false if there was nothing to merge.
+   virtual bool FusionarProfundidadPosterior() { return false; }
++  // First uses so far: compiled shaders read from the card, and the time spent (reading them and preparing each shader
++  // the first time). For telling whether a long frame was waiting for shaders.
++  virtual void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const {
++    lecturas = 0;
++    nanosegundos = 0;
++  }
+   virtual EstadisticasDibujos EstadisticasDeDibujos() const = 0;
+   // Deferred vertex copies finished: before returning the read pointer to the game.
+   virtual void EsperarSubidas() = 0;
+diff --git a/src/ui/deko3d/cache_dksh.cpp b/src/ui/deko3d/cache_dksh.cpp
+index 8eb21fb..2160f12 100644
+--- a/src/ui/deko3d/cache_dksh.cpp
++++ b/src/ui/deko3d/cache_dksh.cpp
+@@ -1,5 +1,6 @@
+ // rex::deko3d (from nfsmw-nx): the DKSH cache file. See rex/ui/deko3d/cache_dksh.h.
+ 
++#include <chrono>
+ #include <rex/ui/deko3d/cache_dksh.h>
+ 
+ #include <rex/ui/deko3d/glsl.h>
+@@ -180,11 +181,16 @@ const std::vector<uint8_t>* CacheDksh::Buscar(const Clave& clave) const {
+   if (it == indice_.end() || it->clave != clave || !archivo_) {
+     return nullptr;
+   }
++  const auto inicio = std::chrono::steady_clock::now();
+   std::vector<uint8_t> dksh(it->bytes);
+   if (std::fseek(archivo_, long(it->posicion), SEEK_SET) != 0 ||
+       std::fread(dksh.data(), 1, dksh.size(), archivo_) != dksh.size()) {
+     return nullptr;
+   }
++  lecturas_.fetch_add(1, std::memory_order_relaxed);
++  lecturas_ns_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - inicio).count()),
++                         std::memory_order_relaxed);
+   return &entradas_.emplace(clave, std::move(dksh)).first->second;
+ }
+ 
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index 65e0421..838819f 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -188,6 +188,8 @@ DkImageView VistaCompleta(const DkImage& imagen) {
+ }
+ 
+ std::filesystem::path RutaCache() { return rex::filesystem::GetExecutableFolder() / "cache" / "nfsmw_dksh.bin"; }
++std::filesystem::path RutaInfo() { return rex::filesystem::GetExecutableFolder() / "cache" / "info_shaders.bin"; }
++constexpr uint32_t kMagiaInfo = 0x4F464E49;  // "INFO": RenderDk::info_guardada_
+ 
+ // ---- The output pass's shaders (GLSL for uam). The same work as the Vulkan path's nfsmw_salida_rampa_gamma.frag
+ // (see it for the reasons): a full-screen triangle, the source's texel, and the game's ramp.
+@@ -515,6 +517,25 @@ RenderDk::RenderDk(deko::ProveedorDeko3d& proveedor, rex::memory::Memory* memori
+   if (!cache_.size()) {
+     REXLOG_WARN("[deko3d] sin cache de DKSH: cada shader se compila en la consola la primera vez que se usa");
+   }
++  if (std::FILE* f = std::fopen(RutaInfo().string().c_str(), "rb")) {
++    uint32_t cabecera[2] = {};
++    if (std::fread(cabecera, sizeof(cabecera), 1, f) == 1 && cabecera[0] == kMagiaInfo && cabecera[1] <= 200000) {
++      for (uint32_t i = 0; i < cabecera[1]; ++i) {
++        uint64_t clave = 0;
++        InfoShader info;
++        uint8_t listos = 0;
++        if (std::fread(&clave, 8, 1, f) != 1 || std::fread(&info.huella, 8, 1, f) != 1 ||
++            std::fread(&info.mascara, 4, 1, f) != 1 || std::fread(&info.interpoladores, 4, 1, f) != 1 ||
++            std::fread(&listos, 1, 1, f) != 1) {
++          break;
++        }
++        info.interpoladores_listos = listos != 0;
++        info_guardada_[clave] = info;
++      }
++    }
++    std::fclose(f);
++    REXLOG_INFO("[deko3d] {} shaders ya preparados en sesiones anteriores", info_guardada_.size());
++  }
+   cache_guardada_ns_ = deko::AhoraNs();
+ 
+   const deko::Compilador::Resultado vacio = compilador_.Compilar(false, "#version 460\nvoid main() {}\n");
+@@ -538,6 +559,7 @@ RenderDk::~RenderDk() {
+   }
+   nucleo_.EsperarGpu();
+   GuardarCacheSiHaceFalta(true);
++  GuardarInfoSiHaceFalta(true);
+   if (guardando_.joinable()) {
+     guardando_.join();
+   }
+@@ -2328,10 +2350,48 @@ bool RenderDk::Presentar(rex::ui::Presenter* presentador, const TexturaSwap& swa
+   CerrarFotogramaDeLaGuardiaDelCielo();
+   SoltarTexturasSiHaceFalta();
+   GuardarCacheSiHaceFalta(false);
++  GuardarInfoSiHaceFalta(false);
+   InformePeriodico();
+   return pintado;
+ }
+ 
++// ---- Each shader's info (InfoDe), kept for the next sessions
++
++void RenderDk::GuardarInfoSiHaceFalta(bool ya) {
++  const uint64_t ahora = deko::AhoraNs();
++  if (!info_sucia_ || (!ya && ahora - info_guardada_ns_ < 30'000'000'000ull)) {
++    return;
++  }
++  info_guardada_ns_ = ahora;
++  info_sucia_ = false;
++  std::error_code error;
++  std::filesystem::create_directories(RutaInfo().parent_path(), error);
++  const std::string temporal = RutaInfo().string() + ".tmp";
++  if (std::FILE* f = std::fopen(temporal.c_str(), "wb")) {
++    const uint32_t cabecera[2] = {kMagiaInfo, uint32_t(info_guardada_.size())};
++    bool ok = std::fwrite(cabecera, sizeof(cabecera), 1, f) == 1;
++    for (const auto& [clave, info] : info_guardada_) {
++      const uint8_t listos = info.interpoladores_listos ? 1 : 0;
++      ok = ok && std::fwrite(&clave, 8, 1, f) == 1 && std::fwrite(&info.huella, 8, 1, f) == 1 &&
++           std::fwrite(&info.mascara, 4, 1, f) == 1 && std::fwrite(&info.interpoladores, 4, 1, f) == 1 &&
++           std::fwrite(&listos, 1, 1, f) == 1;
++    }
++    ok = std::fclose(f) == 0 && ok;
++    if (ok) {
++      std::filesystem::rename(temporal, RutaInfo(), error);
++      if (error) {
++        std::filesystem::remove(RutaInfo(), error);
++        std::filesystem::rename(temporal, RutaInfo(), error);
++      }
++    }
++  }
++}
++
++void RenderDk::PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const {
++  lecturas = cache_.lecturas();
++  nanosegundos = cache_.lecturas_ns() + info_ns_.load(std::memory_order_relaxed);
++}
++
+ // ---- The DKSH cache file and the report
+ 
+ void RenderDk::GuardarCacheSiHaceFalta(bool ya) {
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index b4d3914..cabb2dc 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -899,6 +899,23 @@ void RenderDk::CerrarFotogramaDeLaGuardiaDelCielo() {
+ 
+ RenderDk::InfoShader& RenderDk::InfoDe(const EntradaShader& entrada) {
+   InfoShader& info = info_shaders_[&entrada];
++  if (info.huella && (entrada.vertices || info.interpoladores_listos)) {
++    return info;
++  }
++  // Prepared in an earlier session: the same container gives the same SPIR-V, so the same results.
++  if (entrada.huella_contenedor) {
++    if (const auto it = info_guardada_.find(entrada.huella_contenedor);
++        it != info_guardada_.end() && it->second.huella && (entrada.vertices || it->second.interpoladores_listos)) {
++      info = it->second;
++      return info;
++    }
++  }
++  const uint64_t inicio_info = deko::AhoraNs();
++  struct Medir {
++    std::atomic<uint64_t>& ns;
++    uint64_t inicio;
++    ~Medir() { ns.fetch_add(deko::AhoraNs() - inicio, std::memory_order_relaxed); }
++  } medir{info_ns_, inicio_info};
+   if (!info.huella) {
+     const auto& espirv = entrada.spirv;
+     info.huella = deko::HuellaSpirv(espirv);
+@@ -909,6 +926,10 @@ RenderDk::InfoShader& RenderDk::InfoDe(const EntradaShader& entrada) {
+     info.interpoladores = deko::SpirvAGlsl(entrada.spirv, 0).interpoladores;
+     info.interpoladores_listos = true;
+   }
++  if (entrada.huella_contenedor && info.huella && !entrada.spirv.empty()) {
++    info_guardada_[entrada.huella_contenedor] = info;
++    info_sucia_ = true;
++  }
+   return info;
+ }
+ 
+@@ -962,7 +983,10 @@ const DkShader* RenderDk::ShaderDe(const EntradaShader& entrada, uint32_t especi
+   };
+   if (const std::vector<uint8_t>* dksh = cache_.Buscar(clave_cache)) {
+     ++aciertos_cache_;
+-    return cargar(*dksh);
++    const uint64_t inicio_carga = deko::AhoraNs();
++    const DkShader* cargado = cargar(*dksh);
++    info_ns_.fetch_add(deko::AhoraNs() - inicio_carga, std::memory_order_relaxed);  // a first-time cost too
++    return cargado;
+   }
+   static const bool en_fondo = REXCVAR_GET(nfsmw_dk_compilar_en_fondo);
+   if (entrada.vertices && variante != kTodasLasSalidas && en_fondo &&
+-- 
+2.43.0
+
