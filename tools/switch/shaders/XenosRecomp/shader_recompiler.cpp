@@ -1624,9 +1624,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     uint32_t instrAddress = 0;
     uint32_t instrSize = shader->size;
     bool simpleControlFlow = true;
-    // Forward jumps only (no loop, no jump back): see saltosLineales.
+    // Forward jumps only, plus properly nested Xenos loops (each LoopEnd jumping back to just after its LoopStart):
+    // see saltosLineales.
     bool soloHaciaDelante = true;
     uint32_t indiceCf = 0;
+    std::vector<uint32_t> buclesAbiertos;  // CF index of each open LoopStart
 
     while (instrAddress < instrSize)
     {
@@ -1671,8 +1673,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             }
 
             case ControlFlowOpcode::LoopStart:
+                buclesAbiertos.push_back(indiceCf);
+                break;
             case ControlFlowOpcode::LoopEnd:
-                soloHaciaDelante = false;
+                if (buclesAbiertos.empty() || cfInstr.loopEnd.address != buclesAbiertos.back() + 1)
+                    soloHaciaDelante = false;
+                if (!buclesAbiertos.empty())
+                    buclesAbiertos.pop_back();
                 break;
             }
 
@@ -1693,7 +1700,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      * SPIRV-Cross does not copy every live value on every edge (Dead Space 2's light shaders came out at ~450 KB of
      * GLSL that uam's register allocator could not finish) and the code is plain nested ifs.
      */
+    /*
+     * deadpool-nx: loops in that mode too. Deadpool's per-vertex light loops (a Xenos `loop` around an if/else) made
+     * the whole shader the `while (true) switch (pc)` machine: uam gave it 255 registers and up to 360 KB of spills
+     * per warp, 1.5 MB of code after minutes of compiling, and the first level ran at 7 fps on them. Now each loop is a
+     * real `while (true)` around its own guarded blocks; its LoopEnd sends pc back to the loop's first block with
+     * `continue` and otherwise `break`s. A jump past the loop leaves pc above every block in it, so it falls to the
+     * `break`.
+     */
+    if (!buclesAbiertos.empty())
+        soloHaciaDelante = false;
     const bool lineal = !simpleControlFlow && soloHaciaDelante && saltosLineales;
+    uint32_t buclesPorAbrir = 0, buclesPorCerrar = 0;
 
     if (simpleControlFlow)
     {
@@ -1731,6 +1749,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 indentation = 3;
                 if (pc != 0)
                     out += "\t\t}\n";
+                for (; buclesPorCerrar; --buclesPorCerrar)
+                    out += "\t\tbreak;\n\t\t}\n";
+                for (; buclesPorAbrir; --buclesPorAbrir)
+                    out += "\t\twhile (true)\n\t\t{\n";
                 println("\t\tif (pc <= {})", pc);
                 out += "\t\t{\n";
             }
@@ -1842,6 +1864,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 else 
                 {
                     out += "\t\t\taL = 0;\n";
+                    if (lineal)
+                        ++buclesPorAbrir;  // after this block closes
                 }
                 break;
 
@@ -1860,6 +1884,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     println("\t\t\t\tpc = {};", uint32_t(cfInstr.loopEnd.address));
                     out += "\t\t\t\tcontinue;\n";
                     out += "\t\t\t}\n";
+                    if (lineal)
+                        ++buclesPorCerrar;  // after this block closes
                 }
                 break;
 
@@ -2021,6 +2047,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     if (lineal)
     {
         out += "\t\t}\n";
+        for (; buclesPorCerrar; --buclesPorCerrar)
+            out += "\t\tbreak;\n\t\t}\n";
     }
     else if (!simpleControlFlow)
     {
