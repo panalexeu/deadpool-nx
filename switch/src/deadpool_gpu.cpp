@@ -2500,6 +2500,19 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         REXLOG_INFO("[draws]         s{} {}x{} first bytes:{}", reg, ancho, alto, b);
       }
     }
+    // deadpool-nx: what turns a vertex's position into its depth, per draw: the polygon offset state (PA_SU_SC_MODE_CNTL
+    // bits 11-13 enable it for front, back and points/lines; scale and offset per face), the viewport's depth scale and
+    // offset with PA_CL_VTE_CNTL, the clip control and RB_DEPTH_INFO (bit 16: float24 depth).
+    {
+      auto F = [&](uint32_t reg) { return std::bit_cast<float>(registers_[reg]); };
+      REXLOG_INFO("[draws]       depth state: sc_mode {:08X} poly front {:.9g}/{:.9g} back {:.9g}/{:.9g} vport z {:.9g}*{:.9g} "
+                  "vte {:03X} clip {:08X} depth_info {:08X}",
+                  Register(g::XE_GPU_REG_PA_SU_SC_MODE_CNTL), F(g::XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE),
+                  F(g::XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET), F(g::XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE),
+                  F(g::XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET), F(g::XE_GPU_REG_PA_CL_VPORT_ZOFFSET),
+                  F(g::XE_GPU_REG_PA_CL_VPORT_ZSCALE), Register(g::XE_GPU_REG_PA_CL_VTE_CNTL) & 0xFFF,
+                  Register(g::XE_GPU_REG_PA_CL_CLIP_CNTL), Register(g::XE_GPU_REG_RB_DEPTH_INFO));
+    }
     // deadpool-nx: the vertex shader's first float constants (c0-c11: Unreal Engine 3's view-projection and the mesh's
     // local-to-world), to compare a mesh's depth prepass draw with its base-pass draw.
     if (vs_) {
