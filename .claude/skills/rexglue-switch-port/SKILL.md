@@ -104,6 +104,7 @@ Reading a frame dump:
 | Objects blink at edges | Occlusion answered with the previous frame's result | `deadpool_oclusion_anterior = false` |
 | Sound crackles | Game's audio thread starved (missing blocks), not a decoder bug | `rex_perfil.log`: audio thread %, missing blocks per 10 s; fixes in §6 |
 | Freeze after Start | A blocking wait missed a signal path | Reverted to polling; keep waits as polls |
+| Deadpool's suit drawn as "bare muscle" (red everywhere, streaks, no black panels) | VS/PS interpolators linked by semantic; the Xbox links by register after D3D renumbers the VS exports, and the suit PS reads register 1 as TEXCOORD2 where the VS exports the UV as TEXCOORD1 | Raw texture dump showed the suit texture right in memory; scene buffer already wrong after the base pass; real VS microcode differed from the library only in export registers. SDK 0018 links by register |
 
 Questions that separated hypotheses fast:
 - Is the draw issued at all (trace line present)? Skipped (`no VS`)? Drawn but rejected by depth (try depth test off)?
