@@ -21,12 +21,11 @@ deadpool_oclusion_anterior = false
 
 # Depth prepasses drawn (false = drawn), as on the Xbox. Deadpool takes its scene depth copy right after the prepass,
 # before the base pass, and its screen-space shadows (the blinds in the apartment) and depth of field (the first level
-# all blurred) read that copy: skipped, it was empty. Drawn with the base pass's own vertex shaders, the base pass
-# missed it by a rounding difference (GEQUAL) and the world came out black with the 4-unit pull;
-# nfsmw_dk_sesgo_igualdad_unidades pulls the base pass that much towards passing (raise it if the world is black).
+# all blurred) read that copy: skipped, it was empty. The base pass does not test against the prepass's depth (two
+# separately compiled vertex shaders: it failed and the world came out black, even pulled 64 units): the scene depth
+# is cleared (depth only) before it and it writes its own (deadpool_pase_base_propia_z, on by default).
 deadpool_sin_prepaso_z = false
 deadpool_sin_prepaso_enmascarado = false
-nfsmw_dk_sesgo_igualdad_unidades = 64
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true
