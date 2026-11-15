@@ -27,12 +27,15 @@ deadpool_oclusion_sin_esperar_ms = -1
 # screen-space shadows (the apartment's blinds) and depth of field (the first level all blurred) read that copy.
 deadpool_sin_prepaso_z = false
 deadpool_sin_prepaso_enmascarado = false
-# The base pass tests GEQUAL against the prepass's depth, as on the Xbox. It failed everywhere (the world black)
-# because the translator sent the depth-only vertex shaders' position fetch through the shader's own vertex read
-# (dsVfetch) while the base pass got the same positions as vertex attributes: measured per vertex, every environment
-# surface came out at a different depth (fixed in XenosRecomp: a fetch into r0 took itself for a rewrite of r0).
-# true = the old workaround: clear the depth before the base pass and let it write its own.
-deadpool_pase_base_propia_z = true
+# The base pass tests GEQUAL against the prepass's depth, as on the Xbox.
+deadpool_pase_base_propia_z = false
+
+# The cause of the black world (and of Singularity's red one with its prepass drawn): the renderer's differential
+# vertex constant upload (only the changed registers pushed into a shared block) left some draws with outdated matrices,
+# so a mesh's base pass landed at another depth than its prepass and failed GEQUAL everywhere. Measured: identical
+# game constants, shader maths and vertex data for the same mesh in both passes, depths different per mesh. Off: a full
+# copy of the constant block whenever the game changes one.
+nfsmw_dk_constantes_por_diferencias = false
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true
