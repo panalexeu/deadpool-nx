@@ -155,6 +155,11 @@ REXCVAR_DEFINE_BOOL(deadpool_sin_prepaso_z, true, "Deadpool",
                     "Sin el pase previo de solo profundidad de la escena: el pase base escribe su propia profundidad. "
                     "Con el pase previo, la profundidad de dos vertex shaders compilados aparte no coincide bit a bit y "
                     "el pase base (GEQUAL) se descartaba: el mundo salia negro");
+REXCVAR_DEFINE_BOOL(deadpool_pase_base_escribe_z, true, "Deadpool",
+                    "With deadpool_sin_prepaso_z: the base pass's opaque draws (scene depth, GEQUAL or EQUAL test, "
+                    "depth writes off: Deadpool relies on the prepass for depth) write depth themselves, GEQUAL. "
+                    "Without it nothing wrote the scene depth, the last draw won everywhere and Deadpool's flesh layer "
+                    "covered his suit");
 REXCVAR_DEFINE_BOOL(deadpool_sin_prepaso_enmascarado, true, "Deadpool",
                     "Also skip the masked depth prepass: draws into the scene depth (EDRAM 000) with color+depth mode, "
                     "every color channel masked off and depth writes on (alpha-tested objects' prepass, which the "
@@ -785,8 +790,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 #endif
     deadpool_log_main_thread();
     REXLOG_INFO("[gpu] draws: {} geometry, {} sent to the renderer: {} drawn, {} rejected by it; skipped here: "
-                "{} without VS, {} without PS (the renderer logs each rejection cause once)",
-                geometria_, enviados_, dibujados, rechazados, sin_vs_, sin_ps_);
+                "{} without VS, {} without PS (the renderer logs each rejection cause once); depth prepass "
+                "skipped {}, base pass draws given depth writes {}",
+                geometria_, enviados_, dibujados, rechazados, sin_vs_, sin_ps_, prepass_skipped_, base_z_writes_);
     if (destinos_) {
       uint64_t q[5];
       destinos_->EstadisticasOclusion(q);
@@ -1734,6 +1740,23 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       ++generacion_encuadre_;
       request.generacion_encuadre = generacion_encuadre_;
     }
+    // deadpool_pase_base_escribe_z: with the depth prepass skipped (deadpool_sin_prepaso_z), Deadpool's base pass
+    // tests the scene depth (EDRAM 000) GEQUAL without writing it (depthcontrol 00700762): nothing wrote it, every
+    // draw passed and the last one drawn showed (the flesh layer under the suit). Opaque base pass draws (colour
+    // written, blend ONE/ZERO) write depth here, EQUAL taken as GEQUAL; blended passes (lights, decals) are left alone.
+    const uint32_t zfunc = (saved_depthcontrol >> 4) & 0x7;
+    const bool base_z_write = REXCVAR_GET(deadpool_sin_prepaso_z) && REXCVAR_GET(deadpool_pase_base_escribe_z) &&
+                              !velocity_no_z && !msaa && ps_ && (Register(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 4 &&
+                              (Register(g::XE_GPU_REG_RB_DEPTH_INFO) & 0xFFF) == 0 &&
+                              (saved_depthcontrol & 0x6) == 0x2 && (zfunc == 6 || zfunc == 2) &&
+                              (Register(g::XE_GPU_REG_RB_COLOR_MASK) & 0xFFFF) != 0 &&
+                              Register(g::XE_GPU_REG_RB_BLENDCONTROL0) == 0x00010001;
+    if (base_z_write) {
+      registers_[g::XE_GPU_REG_RB_DEPTHCONTROL] = (saved_depthcontrol & ~0x70u) | 0x4u | (6u << 4);
+      ++generacion_encuadre_;
+      request.generacion_encuadre = generacion_encuadre_;
+      ++base_z_writes_;
+    }
     // deadpool_arboles = 2: the trees' three sway matrices (c11-c22) replaced by the identity for this draw.
     std::array<uint32_t, 48> saved_sway{};
     std::array<uint32_t, 4> saved_c10{};
@@ -1775,7 +1798,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       for (uint32_t i = 0; i < 4; ++i) registers_[0x4000 + 10 * 4 + i] = saved_c10[i];
       ++generacion_constantes_vs_;
     }
-    if (velocity_no_z) {
+    if (velocity_no_z || base_z_write) {
       registers_[g::XE_GPU_REG_RB_DEPTHCONTROL] = saved_depthcontrol;
       ++generacion_encuadre_;
     }
@@ -2895,7 +2918,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint64_t clears_logged_1x_ = 0;
   std::unordered_set<uint64_t> glow_logged_;
   std::unordered_set<uint64_t> unknown_vs_logged_;
-  std::unordered_set<uint32_t> texturas_trazadas_;  // texture bases written by the frame trace
+  std::unordered_set<uint32_t> texturas_trazadas_;
+  uint64_t base_z_writes_ = 0;  // deadpool_pase_base_escribe_z: draws given depth writes  // texture bases written by the frame trace
   uint32_t glow_draws_logged_ = 0;
   bool draw_tracing_ = false;
   uint32_t draw_traces_ = 0, draw_trace_n_ = 0, draw_trace_cap_ = 400;
