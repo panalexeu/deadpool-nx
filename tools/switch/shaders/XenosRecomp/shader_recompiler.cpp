@@ -209,7 +209,12 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
     if (instr.srcRegister == 0 && instr.srcSwizzle == 0)
     {
         const size_t cuerpo = out.find("\n{\n", out.find("void main("));
-        for (size_t p = out.find("r0", cuerpo); cuerpo != std::string::npos && p != std::string::npos && !r0Reescrito;
+        // Only the code before this fetch: its own "r0.xyzw = " is already printed above, and a fetch into r0 at r0.x
+        // (UE3's depth-only vertex shaders) took itself for a rewrite. Read by the shader, Deadpool's depth prepass
+        // fetched its positions through dsVfetch while the base pass got the same positions as attributes; the two
+        // depths disagreed per vertex and the base pass failed its GEQUAL test everywhere (the world black).
+        for (size_t p = out.find("r0", cuerpo); cuerpo != std::string::npos && p != std::string::npos && p < marcaPredicado &&
+                                                !r0Reescrito;
              p = out.find("r0", p + 2))
         {
             if (p > 0 && (std::isalnum(uint8_t(out[p - 1])) || out[p - 1] == '_')) continue;
