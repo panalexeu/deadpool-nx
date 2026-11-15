@@ -19,12 +19,14 @@ nfsmw_dk_compilar_variantes = false
 # frame's result (true): objects showed up a frame late or blinked at edges. The wait sleeps instead of spinning anyway.
 deadpool_oclusion_anterior = false
 
-# Skip the depth prepass (gears2-nx's rule): drawn, the base pass's depth misses it by a rounding difference between
-# two separately compiled vertex shaders, and the world turns red.
-deadpool_sin_prepaso_z = true
+# Depth prepass drawn (false = drawn). Deadpool's base pass only tests depth (depthcontrol 00700762, no writes), so
+# the prepass is what fills the scene depth: skipped (Singularity's setting, whose base pass writes depth), nothing
+# hid anything and Deadpool's flesh layer covered his suit.
+deadpool_sin_prepaso_z = false
 
-# Also skip the masked (alpha-tested) depth prepass: drawn, windows, rubbish and debris showed old frames.
-deadpool_sin_prepaso_enmascarado = true
+# The masked (alpha-tested) depth prepass, drawn for the same reason. In Singularity, drawn, windows and debris
+# showed old frames; if alpha-tested objects do that here, set it to true.
+deadpool_sin_prepaso_enmascarado = false
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true
