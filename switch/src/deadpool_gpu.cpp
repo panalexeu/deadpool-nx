@@ -2367,11 +2367,21 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
                   reg, ps_->samplers[i].tipo, f[1] & 0xFFFFF000u, f[1] & 0x3F, (f[2] & 0x1FFF) + 1,
                   ((f[2] >> 13) & 0x1FFF) + 1, (f[5] >> 9) & 0x3, (f[3] >> 1) & 0xFFF, (f[0] >> 2) & 0xFF,
                   (f[0] >> 31) & 1, f[0] & 0x3, f[0], f[1], f[2], f[3], f[4], f[5]);
+      // deadpool-nx: a tiny texture (UE3's 1x1 white/black defaults, masks) is a value, not an image: its first 16
+      // bytes as the GPU reads them (Deadpool's suit is clipped by one 1x1 texel and a few constants).
+      const uint32_t ancho = (f[2] & 0x1FFF) + 1, alto = ((f[2] >> 13) & 0x1FFF) + 1, base = f[1] & 0x1FFFF000u;
+      if (base && ancho * alto <= 16) {
+        const uint8_t* d = memory_->TranslatePhysical(base);
+        std::string b;
+        for (uint32_t k = 0; k < 16; ++k) b += fmt::format(" {:02X}", d[k]);
+        REXLOG_INFO("[draws]         s{} {}x{} first bytes:{}", reg, ancho, alto, b);
+      }
     }
-    // The pixel shader's first float constants (a material without textures shows its colour here).
+    // The pixel shader's float constants (a material without textures shows its colour here). deadpool-nx: c0-c47,
+    // not c0-c15: Deadpool's materials read up to c36 (the suit's clip reads c7, c16 and c18).
     if (ps_) {
       std::string pc;
-      for (uint32_t c = 0; c < 16; ++c) {
+      for (uint32_t c = 0; c < 48; ++c) {
         const uint32_t r = 0x4000 + (256 + c) * 4;
         pc += fmt::format(" c{}=({:g} {:g} {:g} {:g})", c, std::bit_cast<float>(registers_[r]),
                           std::bit_cast<float>(registers_[r + 1]), std::bit_cast<float>(registers_[r + 2]),
