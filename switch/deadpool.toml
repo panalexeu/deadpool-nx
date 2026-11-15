@@ -30,3 +30,12 @@ deadpool_sin_prepaso_enmascarado = false
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true
+
+# Singularity's audio changes, off until shown to work for Deadpool. In one session the sound stuck on one repeated
+# note and the level load never finished: a game thread kicked one XMA context ~600,000 times a second with nothing
+# decoded.
+# audio_xma_fin_tras_drenar (SDK patch 0009): holds back "input used up" until the game reads the output; measured
+# on Singularity's XAudio2. false = upstream rexglue's behaviour (deadpool-recomp's, which works).
+audio_xma_fin_tras_drenar = false
+# The game's XAudio2 state-variable filters as native code (switch/src/deadpool_perf_hooks.cpp): false = the game's own.
+deadpool_audio_filtro_nativo = false
