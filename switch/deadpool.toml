@@ -32,7 +32,7 @@ deadpool_sin_prepaso_enmascarado = false
 # (dsVfetch) while the base pass got the same positions as vertex attributes: measured per vertex, every environment
 # surface came out at a different depth (fixed in XenosRecomp: a fetch into r0 took itself for a rewrite of r0).
 # true = the old workaround: clear the depth before the base pass and let it write its own.
-deadpool_pase_base_propia_z = false
+deadpool_pase_base_propia_z = true
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true

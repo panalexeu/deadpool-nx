@@ -2500,6 +2500,18 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         REXLOG_INFO("[draws]         s{} {}x{} first bytes:{}", reg, ancho, alto, b);
       }
     }
+    // deadpool-nx: the vertex shader's first float constants (c0-c11: Unreal Engine 3's view-projection and the mesh's
+    // local-to-world), to compare a mesh's depth prepass draw with its base-pass draw.
+    if (vs_) {
+      std::string vc;
+      for (uint32_t c = 0; c < 12; ++c) {
+        const uint32_t r = 0x4000 + c * 4;
+        vc += fmt::format(" c{}=({:.9g} {:.9g} {:.9g} {:.9g})", c, std::bit_cast<float>(registers_[r]),
+                          std::bit_cast<float>(registers_[r + 1]), std::bit_cast<float>(registers_[r + 2]),
+                          std::bit_cast<float>(registers_[r + 3]));
+      }
+      REXLOG_INFO("[draws]       vs constants{}", vc);
+    }
     // The pixel shader's float constants (a material without textures shows its colour here). deadpool-nx: c0-c47,
     // not c0-c15: Deadpool's materials read up to c36 (the suit's clip reads c7, c16 and c18).
     if (ps_) {
