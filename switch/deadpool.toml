@@ -15,19 +15,20 @@ deadpool_resolution = 540
 # variant (the same image). A runtime compile took a game core for 30+ s and the sound crackled.
 nfsmw_dk_compilar_variantes = false
 
-# Occlusion: when the game waits for a visibility result the GPU has not counted yet, do not answer with the previous
-# frame's result (true): objects showed up a frame late or blinked at edges. The wait sleeps instead of spinning anyway.
-deadpool_oclusion_anterior = false
+# Occlusion: a visibility result the GPU has not counted yet when the game waits for it is answered with that query's
+# previous frame result (true). False answered "visible": 14,613 of 24,056 queries in one session, and the lights'
+# coronas shone through walls. (Singularity turned it off for objects blinking at screen edges.)
+deadpool_oclusion_anterior = true
 
-# Depth prepasses drawn (false = drawn), as on the Xbox: Deadpool's scene depth copy (screen-space shadows, depth of
-# field) is taken from them, before the base pass. The base pass tests GEQUAL against the prepass's depth: every vertex
-# shader's position is `invariant` (SDK 0024), so each variant of a vertex shader computes it bit for bit the same;
-# without it the base pass failed everywhere and the world came out black.
+# Depth prepasses drawn (false = drawn): Deadpool copies the scene depth right after them, before the base pass, and its
+# screen-space shadows (the apartment's blinds) and depth of field (the first level all blurred) read that copy.
 deadpool_sin_prepaso_z = false
 deadpool_sin_prepaso_enmascarado = false
-# The workaround before invariance: clear the depth before the base pass and let it write its own. Off: walls drawn
-# some other way lost their depth and lights shone through them.
-deadpool_pase_base_propia_z = false
+# The base pass, testing GEQUAL against the prepass's depth, failed everywhere on the Switch (the world black) although
+# both draw each mesh with the same vertex shader and depth state; not explained yet (not ZCULL, not a depth bias, not
+# position rounding between shader variants). So the scene depth is cleared (depth only, stencil kept) before the
+# frame's first opaque base-pass draw and the base pass writes and tests its own depth.
+deadpool_pase_base_propia_z = true
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true
