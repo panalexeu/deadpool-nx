@@ -124,25 +124,6 @@ const char* Leer(const ds::Shader& shader, EntradaShader& e) {
     e.salidas = c.U32(cabecera + 0x1C);
   }
 
-  // deadpool-nx: the interpolator table (usage index bits 0-3, usage bits 4-7, register bits 8-11; count in bits
-  // 5-9 of the header's word 0x14): after the vertex elements of a vertex shader, at 0x20 in a pixel shader. The
-  // renderer links by register with it (EntradaShader::ubicacion_interpolador, SDK 0019): D3D renumbers a vertex
-  // shader's exports for each pixel shader, and Deadpool's suit PS reads register 1 as TEXCOORD2 where its VS exports
-  // the UV as TEXCOORD1.
-  {
-    const uint32_t cuenta = (c.U32(cabecera + 0x14) >> 5) & 0x1F;
-    const size_t inicio = e.vertices ? size_t(cabecera) + 0x24 + size_t(c.U32(cabecera + 0x18) + c.U32(cabecera + 0x1C)) * 4
-                                     : size_t(cabecera) + 0x20;
-    if (cuenta <= 16 && inicio + size_t(cuenta) * 4 <= virtuales) {
-      for (uint32_t i = 0; i < cuenta; ++i) {
-        const uint32_t v = c.U32(inicio + size_t(i) * 4);
-        const uint32_t indice = v & 0xF, uso = (v >> 4) & 0xF, registro = (v >> 8) & 0xF;
-        if (uso == 5) e.ubicacion_interpolador[registro] = uint8_t(indice);             // TEXCOORDn
-        else if (uso == 10) e.ubicacion_interpolador[registro] = uint8_t(16 + indice);  // COLORn
-      }
-    }
-  }
-
   // No constant table (Gears of War 2: Unreal Engine 3 strips it from every shader and sets constants by register).
   // The translator then reads any float register from the uniform block, so the whole block is uploaded; the samplers
   // come from the SPIR-V's bindings (SamplersDesdeSpirv, after this).
