@@ -15,10 +15,13 @@ deadpool_resolution = 540
 # variant (the same image). A runtime compile took a game core for 30+ s and the sound crackled.
 nfsmw_dk_compilar_variantes = false
 
-# Occlusion: a visibility result the GPU has not counted yet when the game waits for it is answered with that query's
-# previous frame result (true). False answered "visible": 14,613 of 24,056 queries in one session, and the lights'
-# coronas shone through walls. (Singularity turned it off for objects blinking at screen edges.)
-deadpool_oclusion_anterior = true
+# Occlusion: never answer with the previous frame's result (true): in Singularity objects blinked at edges, in Deadpool
+# the world and objects flickered.
+deadpool_oclusion_anterior = false
+# A visibility result the GPU has not counted yet when the game waits for it: wait for the count (up to
+# deadpool_oclusion_espera_ms, 40) instead of answering "visible" after 3 ms. Answered visible, 14,613 of 24,056 queries
+# in one session, and the lights' coronas shone through walls.
+deadpool_oclusion_sin_esperar_ms = -1
 
 # Depth prepasses drawn (false = drawn): Deadpool copies the scene depth right after them, before the base pass, and its
 # screen-space shadows (the apartment's blinds) and depth of field (the first level all blurred) read that copy.
