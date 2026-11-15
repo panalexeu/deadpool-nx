@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 12:40:00 +0200
+Subject: [PATCH] deko3d: DKSH cache entries up to 8 MiB
+
+Deadpool's skinned-mesh vertex shaders compile to 1.0-1.9 MB of DKSH. A single entry over the 1 MiB limit made
+CacheDksh reject the whole file ("danada"): both caches were dropped and the console compiled every shader itself.
+
+---
+diff --git a/src/ui/deko3d/cache_dksh.cpp b/src/ui/deko3d/cache_dksh.cpp
+index 2160f12..459dc91 100644
+--- a/src/ui/deko3d/cache_dksh.cpp
++++ b/src/ui/deko3d/cache_dksh.cpp
+@@ -25,7 +25,10 @@ constexpr size_t kCabecera = 32;
+ constexpr size_t kEntrada = 24;
+ // Gears of War 2 ships ~100,000 variants (10,000+ shaders, nine pixel shader variants each).
+ constexpr uint32_t kMaxEntradas = 1u << 20;  // Gears of War 2, every shader: ~220,000 variants
+-constexpr uint32_t kMaxDksh = 1u << 20;
++// One DKSH entry. Deadpool: 168 vertex shader variants (skinned meshes, uam 2-6 min each on the PC) are 1.0-1.9 MB;
++// with a 1 MiB limit one such entry made the whole cache "danada", both caches were dropped and every shader was
++// compiled on the console.
++constexpr uint32_t kMaxDksh = 8u << 20;
+ 
+ uint32_t U32(const uint8_t* p) {
+   uint32_t v;
+-- 
+2.43.0

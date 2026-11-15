@@ -15,7 +15,7 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
 git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from the Vulkan SDK.
 
 1. Clone and set up the SDKs: rexglue-sdk-nx pinned to `f961303` in `thirdparty/rexglue-sdk-nx` plus
-   `patches/rexglue-sdk-nx/` (the same 16 patches as singularity-nx), upstream rexglue-sdk `v0.10.0` in
+   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017`, DKSH cache entries up to 8 MiB), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash
@@ -35,7 +35,7 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
    ```
 
 4. Build the shaders once (12,982 shaders and their DKSH variants, about 3.5 hours on 12 threads; the variants that
-   time out at 120 s are retried with a 30-minute limit into `nfsmw_dksh.bin`):
+   time out at 120 s are retried with a 30-minute limit and merged into `shadercache_dksh.bin`):
 
    ```bash
    DXC=<path to dxc> VAL=<path to spirv-val> tools/switch/shaders.sh
@@ -48,8 +48,8 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
    ```
 
 6. Copy to `sdmc:/switch/deadpool/`: `out/build/switch-native/deadpool.nro`, `switch/deadpool.toml`,
-   `out/shaders/deadpool_shaders.dslib`, `out/shaders/shadercache_dksh.bin`, `out/shaders/info_shaders.bin` and
-   `out/shaders/nfsmw_dksh.bin` (these two into a `cache/` folder there) and your `deadpool-extract/` folder. Launch the NRO from the homebrew menu in title takeover
+   `out/shaders/deadpool_shaders.dslib`, `out/shaders/shadercache_dksh.bin`, `out/shaders/info_shaders.bin` (into a
+   `cache/` folder there) and your `deadpool-extract/` folder. Launch the NRO from the homebrew menu in title takeover
    mode; logs go to `logs/` next to it.
 
 Known shader issue: the vertex shaders `vs_185367fe72f7ab08` and `vs_e1511ae81967229d` do not compile for the Switch

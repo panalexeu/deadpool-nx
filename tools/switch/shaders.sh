@@ -7,7 +7,7 @@
 #   tools/switch/shaders.sh
 #
 # Output: out/shaders/deadpool_shaders.dslib and out/shaders/shadercache_dksh.bin (copy both next to the NRO), and
-# out/shaders/info_shaders.bin and out/shaders/nfsmw_dksh.bin (copy them to cache/ next to the NRO).
+# out/shaders/info_shaders.bin (copy it to cache/ next to the NRO).
 # Needs dxc and spirv-val (DXC=..., VAL=... or on PATH), clang-20 / clang++-20 and tools/setup.sh done.
 # Takes hours (Singularity: 21,766 shaders and ~152,000 DKSH variants), on every core.
 set -euo pipefail
@@ -34,10 +34,12 @@ echo "shaders: $(ls "$out/shaders_extracted" | grep -c '^vs_') VS, $(ls "$out/sh
 DKSH=1 VARIANTES="$root/tools/switch/shaders/dksh_variants.txt" \
   "$root/tools/switch/shaders/build_library.sh" "$out/shaders_extracted" "$out/shaders"
 
-# Variants the full build could not compile in its 120 s limit, retried with 30 minutes each into a second cache,
-# out/shaders/nfsmw_dksh.bin (copy it to cache/ next to the NRO). Deadpool: 199 of 203 compile on the retry (2-6 min
-# each); vs_185367fe72f7ab08 and vs_e1511ae81967229d fail in uam ("array index must be < 16") at any limit.
+# Variants the full build could not compile in its 120 s limit, retried with 30 minutes each and merged into
+# shadercache_dksh.bin (not left in nfsmw_dksh.bin: the console rewrites cache/nfsmw_dksh.bin with only what it
+# compiled itself). Deadpool: 199 of 203 compile on the retry (2-6 min each, 1.0-1.9 MB of DKSH, hence SDK patch
+# 0017); vs_185367fe72f7ab08 and vs_e1511ae81967229d fail in uam ("array index must be < 16") at any limit.
 clang-20 -O2 -I"$sdk/thirdparty/xxHash" "$root/tools/switch/shaders/xxh3.c" -o "$out/bin/xxh3"
+clang-20 -O2 -I"$sdk/thirdparty/xxHash" "$root/tools/switch/shaders/dksh_merge.c" -o "$out/bin/dksh_merge"
 python3 - "$out" <<'PY'
 import csv, os, subprocess, sys
 out = sys.argv[1]
@@ -59,6 +61,7 @@ if [ "$(grep -vc '^#' "$out/shaders/fallidas.txt")" -gt 0 ]; then
      --solo-variantes 1 --contenedores contenedores --informe fallidas.tsv --hilos "$(nproc)" --limite 1800 \
      > fallidas.log 2>&1) || echo "some variants still fail: $out/shaders/fallidas.tsv"
   grep -v 'variantes$' "$out/shaders/fallidas.log" | tail -4
+  "$out/bin/dksh_merge" "$out/shaders/shadercache_merged.bin" "$out/shaders/shadercache_dksh.bin" \
+    "$out/shaders/nfsmw_dksh.bin" && mv "$out/shaders/shadercache_merged.bin" "$out/shaders/shadercache_dksh.bin"
 fi
-ls -la "$out/shaders/deadpool_shaders.dslib" "$out/shaders/shadercache_dksh.bin" "$out/shaders/info_shaders.bin" \
-  "$out/shaders/nfsmw_dksh.bin" 2>/dev/null || true
+ls -la "$out/shaders/deadpool_shaders.dslib" "$out/shaders/shadercache_dksh.bin" "$out/shaders/info_shaders.bin"
