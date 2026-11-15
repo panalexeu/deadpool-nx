@@ -15,7 +15,8 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
 git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from the Vulkan SDK.
 
 1. Clone and set up the SDKs: rexglue-sdk-nx pinned to `f961303` in `thirdparty/rexglue-sdk-nx` plus
-   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017`, DKSH cache entries up to 8 MiB), upstream rexglue-sdk `v0.10.0` in
+   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017` DKSH cache entries up to 8 MiB, `0018` a stuck XMA context
+   detector and `0019` interpolators linked by register as on the Xbox 360), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash
@@ -74,16 +75,15 @@ instruction by instruction in the generated code:
 | Shader extractor | packages version 846, licensee 181: 16 more bytes before the folder name, the GUID fields of 623 | version 584 |
 
 `deadpool.toml` starts from singularity-nx's settings (1785 MHz CPU, 460 MHz GPU, 540p, no runtime shader compiles),
-except that the depth prepass is drawn: Deadpool's base pass does not write depth.
+except: the base pass writes depth (`deadpool_pase_base_escribe_z`, Deadpool's base pass relies on the skipped
+prepass for it) and Singularity's XMA and audio filter changes are off.
 
 ### Known issues
 
 - Bink movies are black: their YUV shaders are not in the shader library, and the renderer takes their draws for
   clears.
-- Interpolators are linked by semantic, but the Xbox 360 links them by register after D3D renumbers the vertex
-  shader's exports for each pixel shader. Deadpool has such pairs (the suit's vertex shader exports the UV as
-  TEXCOORD1 in register 1, its pixel shader reads register 1 as TEXCOORD2). A fix that compiles remapped pixel shaders
-  on the console is in `patches/pending/` (not applied); it should become PC-built cache variants instead.
+- The register-linked interpolators (SDK `0019`) compile their remapped pixel shaders on the console the first time
+  (~10-40 ms each, in the background); they should become PC-built cache variants.
 
 ### License
 
