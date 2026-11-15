@@ -19,13 +19,15 @@ nfsmw_dk_compilar_variantes = false
 # frame's result (true): objects showed up a frame late or blinked at edges. The wait sleeps instead of spinning anyway.
 deadpool_oclusion_anterior = false
 
-# Depth prepasses drawn (false = drawn), as on the Xbox. Deadpool takes its scene depth copy right after the prepass,
-# before the base pass, and its screen-space shadows (the blinds in the apartment) and depth of field (the first level
-# all blurred) read that copy: skipped, it was empty. The base pass does not test against the prepass's depth (two
-# separately compiled vertex shaders: it failed and the world came out black, even pulled 64 units): the scene depth
-# is cleared (depth only) before it and it writes its own (deadpool_pase_base_propia_z, on by default).
+# Depth prepasses drawn (false = drawn), as on the Xbox: Deadpool's scene depth copy (screen-space shadows, depth of
+# field) is taken from them, before the base pass. The base pass tests GEQUAL against the prepass's depth: every vertex
+# shader's position is `invariant` (SDK 0024), so each variant of a vertex shader computes it bit for bit the same;
+# without it the base pass failed everywhere and the world came out black.
 deadpool_sin_prepaso_z = false
 deadpool_sin_prepaso_enmascarado = false
+# The workaround before invariance: clear the depth before the base pass and let it write its own. Off: walls drawn
+# some other way lost their depth and lights shone through them.
+deadpool_pase_base_propia_z = false
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true
