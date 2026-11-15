@@ -899,7 +899,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
       case xenos::PM4_XE_SWAP:
 #if DEADPOOL_DEKO3D
-        if (draw_tracing_ && destinos_ && base_limpia_en_fotograma_) {
+        if (destinos_ && base_limpia_en_fotograma_) {  // the renderer dumps the frame after the traced one
           destinos_->VolcarProfundidad(escena_z_info_, escena_z_pitch_, 0xC0C);
         }
         FrameTraceSwap();
@@ -1779,7 +1779,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         // prepass, they show why the base pass fails against the prepass's depth.
         escena_z_info_ = Register(g::XE_GPU_REG_RB_DEPTH_INFO);
         escena_z_pitch_ = Register(g::XE_GPU_REG_RB_SURFACE_INFO) & 0x3FFF;
-        if (draw_tracing_ && destinos_) destinos_->VolcarProfundidad(escena_z_info_, escena_z_pitch_, 0xB0B);
+        if (destinos_) destinos_->VolcarProfundidad(escena_z_info_, escena_z_pitch_, 0xB0B);  // only while dumping
         ClearSceneDepthOnly();
         ++base_depth_clears_;
       }
