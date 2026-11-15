@@ -1,0 +1,252 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 13:20:00 +0200
+Subject: [PATCH] deko3d: link interpolators by register, as the Xbox 360
+
+The Xbox 360 links vertex shader exports to pixel shader inputs by register, after D3D renumbered the exports for
+the pixel shader; the translated shaders link by semantic. Deadpool's suit: the VS exports the UV as TEXCOORD1 in
+register 1, the PS reads register 1 as TEXCOORD2, so linked by semantic the PS read an unwritten interpolator, the
+suit was sampled at garbage coordinates and Deadpool looked like bare muscle.
+
+EntradaShader::ubicacion_interpolador (filled by the game's library from the container's interpolator table) gives
+each register's location. Per VS load, D3D's renumbering is read from the export instructions that differ between
+the library microcode and the loaded one. When the register linking differs from the semantic one, the pixel shader
+gets a kVarianteRemapeo variant whose inputs are moved (SpirvAGlsl's origen_entradas); it is compiled even with
+nfsmw_dk_compilar_variantes = false, and the VS keeps the outputs it then reads.
+
+---
+diff --git a/include/rex/x360/shader_entry.h b/include/rex/x360/shader_entry.h
+--- a/include/rex/x360/shader_entry.h
++++ b/include/rex/x360/shader_entry.h
+@@ -8,6 +8,7 @@
+ // use to recognise specific shaders (its sky, glow or composition passes).
+ #pragma once
+ 
++#include <array>
+ #include <cstdint>
+ #include <span>
+ #include <vector>
+@@ -47,6 +48,16 @@
+   bool descarta = false;
+   bool sombra_minimo = false;
+   uint32_t constantes_bytes = 256 * 16;
++  // The container's interpolators: register -> the GLSL location of its semantic (TEXCOORDn = n, COLORn = 16 + n),
++  // 0xFF = none (the game's library fills it; all 0xFF = unknown). The Xbox 360 links vertex shader exports to pixel
++  // shader inputs by REGISTER, after D3D renumbered the exports for the pixel shader; the translated shaders link by
++  // semantic. Where the two differ (Deadpool: a VS exporting the UV as TEXCOORD1 in register 1 for a PS reading
++  // register 1 as TEXCOORD2), the renderer remaps the pixel shader's inputs (dibujos.cpp, RemapeoInterpoladores).
++  std::array<uint8_t, 16> ubicacion_interpolador = [] {
++    std::array<uint8_t, 16> a;
++    a.fill(0xFF);
++    return a;
++  }();
+ };
+ 
+ }  // namespace rex::x360
+diff --git a/include/rex/ui/deko3d/glsl.h b/include/rex/ui/deko3d/glsl.h
+--- a/include/rex/ui/deko3d/glsl.h
++++ b/include/rex/ui/deko3d/glsl.h
+@@ -51,7 +51,10 @@
+ // Every library vertex shader writes all 22; NVK drops the ones the pixel shader does not read when it links the
+ // pipeline, and uam has no linking, so the others are removed here and Mesa's front end drops what only fed them.
+ // ~0u keeps them all.
+-GlslDeko SpirvAGlsl(std::span<const uint32_t> espirv, uint32_t especializacion, uint32_t salidas = ~0u);
++// `origen_entradas` (pixel shaders): input location L is read from location origen_entradas[L] instead (0xFF or past
++// its end: unchanged), the register linking of RemapeoInterpoladores.
++GlslDeko SpirvAGlsl(std::span<const uint32_t> espirv, uint32_t especializacion, uint32_t salidas = ~0u,
++                    std::span<const uint8_t> origen_entradas = {});
+ 
+ /*
+  * The bits of the specialization value that change this shader's code. The pipeline key has one value for both
+diff --git a/src/ui/deko3d/glsl.cpp b/src/ui/deko3d/glsl.cpp
+--- a/src/ui/deko3d/glsl.cpp
++++ b/src/ui/deko3d/glsl.cpp
+@@ -189,11 +189,22 @@
+   return desconocido ? kTodo : mascara;
+ }
+ 
+-GlslDeko SpirvAGlsl(std::span<const uint32_t> espirv, uint32_t especializacion, uint32_t salidas) {
++GlslDeko SpirvAGlsl(std::span<const uint32_t> espirv, uint32_t especializacion, uint32_t salidas,
++                    std::span<const uint8_t> origen_entradas) {
+   GlslDeko r;
+   try {
+     spirv_cross::CompilerGLSL compilador(espirv.data(), espirv.size());
+     r.vertices = compilador.get_execution_model() == spv::ExecutionModelVertex;
++    if (!r.vertices && !origen_entradas.empty()) {
++      // Each input moved to the location its value really arrives at (before the masks below are taken).
++      for (const spirv_cross::Resource& e : compilador.get_shader_resources().stage_inputs) {
++        if (!compilador.has_decoration(e.id, spv::DecorationLocation)) continue;
++        const uint32_t ubicacion = compilador.get_decoration(e.id, spv::DecorationLocation);
++        if (ubicacion < origen_entradas.size() && origen_entradas[ubicacion] != 0xFF) {
++          compilador.set_decoration(e.id, spv::DecorationLocation, origen_entradas[ubicacion]);
++        }
++      }
++    }
+     uint32_t quitar = 0;  // interpolator outputs of a vertex shader that become plain globals (QuitarSalidas)
+     if (r.vertices) {
+       for (const spirv_cross::Resource& s : compilador.get_shader_resources().stage_outputs) {
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -464,6 +464,16 @@
+     bool interpoladores_listos = false;
+   };
+   InfoShader& InfoDe(const EntradaShader& entrada);
++  // The pixel shader's inputs linked by register as on the Xbox 360 (EntradaShader::ubicacion_interpolador): the
++  // kVarianteRemapeo bits of variante_ps for this draw (0: the semantic linking already matches) and, through
++  // `mascara_vs`, the vertex shader outputs that pixel shader then reads.
++  uint32_t RemapeoInterpoladores(const PeticionDibujo& p, const EntradaShader& ps, uint32_t& mascara_vs);
++  // D3D's renumbering of the exports of the current vertex shader load (library register -> real register, 0xFF
++  // removed), recomputed when generacion_vs changes; and each remap by its variant bits.
++  uint64_t exportaciones_generacion_ = ~0ull;
++  const EntradaShader* exportaciones_vs_ = nullptr;
++  std::array<uint8_t, 16> exportaciones_{};
++  std::unordered_map<uint32_t, std::array<uint8_t, 32>> remapeos_;
+   // InfoDe's results from earlier sessions, by container fingerprint (cache/info_shaders.bin): a pixel shader's first
+   // use converted its whole SPIR-V to GLSL only to learn its interpolators, ~5-10 ms each on the ring thread (most of
+   // the lightning freeze once the reads were gone). info_sucia_: new entries since the last save.
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -137,6 +137,9 @@
+ constexpr uint32_t kVarianteZTemprana = 1;
+ constexpr uint32_t kVarianteResplandorNatural = 2;
+ constexpr uint32_t kVarianteResplandorSuave = 4;
++// The pixel shader's inputs re-pointed (RemapeoInterpoladores): this bit plus a hash of the remap in bits 8-31.
++constexpr uint32_t kVarianteRemapeo = 0x80;
++constexpr uint32_t kMascaraIdRemapeo = 0xFFFFFF00u;
+ constexpr uint32_t kPalabraInvTamano = 90;
+ constexpr uint32_t kMaxVerticesPorDibujo = uint32_t(1) << 20;
+ constexpr uint32_t kUboBytesVs = 256 * 16;
+@@ -947,6 +950,10 @@
+   }
+   const uint32_t espec = especializacion & info.mascara;
+   const uint32_t variante = entrada.vertices ? salidas : variante_ps;
++  std::span<const uint8_t> origen;
++  if (!entrada.vertices && (variante_ps & kVarianteRemapeo)) {
++    if (const auto it = remapeos_.find(variante_ps & kMascaraIdRemapeo); it != remapeos_.end()) origen = it->second;
++  }
+   const ClaveCargado clave{&entrada, espec, variante};
+   if (const auto it = cargados_.find(clave); it != cargados_.end()) {
+     return it->second.get();
+@@ -1022,7 +1029,10 @@
+     if (en_fondo_.emplace(h, true).second) {
+       REXLOG_INFO("[deko3d] {} no esta en la cache: se compila en segundo plano (huella {:016X})", nombre, info.huella);
+       static const bool compilar = REXCVAR_GET(nfsmw_dk_compilar_variantes);
+-      deko::GlslDeko g = compilar ? deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas) : deko::GlslDeko{};
++      // A remapped one is compiled even so: it is not a faster form of the same image, the library shader reads
++      // the wrong interpolators (a pixel shader takes ~10-40 ms on the worker).
++      deko::GlslDeko g = compilar || !origen.empty() ? deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas, origen)
++                                                     : deko::GlslDeko{};
+       if (!g.glsl.empty()) {
+         if (variante_ps & kVarianteZTemprana) {
+           DeclararZTemprana(g.glsl);
+@@ -1044,7 +1054,7 @@
+   }
+   // On the spot (it blocks the ring thread for one compile: ~40-100 ms on the console).
+   const uint64_t inicio = deko::AhoraNs();
+-  deko::GlslDeko g = deko::SpirvAGlsl(espirv, espec, entrada.vertices ? variante : kTodasLasSalidas);
++  deko::GlslDeko g = deko::SpirvAGlsl(espirv, espec, entrada.vertices ? variante : kTodasLasSalidas, origen);
+   if (g.glsl.empty()) {
+     REXLOG_ERROR("[deko3d] {}: no se pudo pasar a GLSL: {}", nombre, g.error);
+     cargados_.emplace(clave, nullptr);
+@@ -1070,6 +1080,83 @@
+   return cargar(r.dksh);
+ }
+ 
++uint32_t RenderDk::RemapeoInterpoladores(const PeticionDibujo& p, const EntradaShader& ps, uint32_t& mascara_vs) {
++  const EntradaShader& vs = *p.vs;
++  if (vs.ubicacion_interpolador[0] == 0xFF && ps.ubicacion_interpolador[0] == 0xFF) {
++    bool conocidas = false;
++    for (size_t i = 1; i < 16 && !conocidas; ++i) {
++      conocidas = vs.ubicacion_interpolador[i] != 0xFF || ps.ubicacion_interpolador[i] != 0xFF;
++    }
++    if (!conocidas) return 0;  // a library without the tables: semantic linking as before
++  }
++  // D3D's renumbering, from the export ALU instructions that differ between the library's microcode and the loaded
++  // one (word 0: bit 15 export, bits 0-5 the register; fetch instructions skipped). Renumbered: only the register
++  // changed. Removed: no longer an export (Deadpool: C8000000 02000000, a no-op).
++  if (p.generacion_vs != exportaciones_generacion_ || exportaciones_vs_ != &vs) {
++    exportaciones_generacion_ = p.generacion_vs;
++    exportaciones_vs_ = &vs;
++    for (uint8_t k = 0; k < 16; ++k) exportaciones_[k] = k;
++    const std::vector<uint32_t>& lib = vs.microcodigo;
++    const std::span<const uint32_t> real = p.vs_microcodigo;
++    if (lib.size() == real.size()) {
++      std::vector<bool> fetch(lib.size() / 3, false);
++      for (const ElementoVertice& e : vs.elementos) {
++        if (e.instruccion < fetch.size()) fetch[e.instruccion] = true;
++      }
++      for (size_t i = 0; i < lib.size() / 3; ++i) {
++        const uint32_t a = lib[i * 3], b = real[i * 3];
++        if (fetch[i] || (a == b && lib[i * 3 + 1] == real[i * 3 + 1] && lib[i * 3 + 2] == real[i * 3 + 2]) ||
++            !(a & 0x8000) || (a & 0x3F) >= 16) {
++          continue;
++        }
++        if ((b & 0x8000) && ((a ^ b) & ~0x3Fu) == 0 && (b & 0x3F) < 16) {
++          exportaciones_[a & 0x3F] = uint8_t(b & 0x3F);
++        } else if (!(b & 0x8000)) {
++          exportaciones_[a & 0x3F] = 0xFF;
++        }
++      }
++    }
++  }
++  // Pixel shader register j reads what the vertex shader exports to register j: the library register k that D3D
++  // moved there. Its input location becomes that export's location.
++  std::array<uint8_t, 32> origen;
++  for (uint8_t l = 0; l < 32; ++l) origen[l] = l;
++  bool cambia = false;
++  for (uint8_t j = 0; j < 16; ++j) {
++    const uint8_t l_ps = ps.ubicacion_interpolador[j];
++    if (l_ps >= 32) continue;
++    for (uint8_t k = 0; k < 16; ++k) {
++      const uint8_t l_vs = vs.ubicacion_interpolador[k];
++      if (exportaciones_[k] == j && l_vs < 32) {
++        cambia |= l_vs != l_ps;
++        origen[l_ps] = l_vs;
++        break;
++      }
++    }
++  }
++  if (!cambia) return 0;
++  const uint32_t id = uint32_t(XXH3_64bits(origen.data(), origen.size())) & kMascaraIdRemapeo;
++  const auto [it, nuevo] = remapeos_.emplace(id, origen);
++  if (!nuevo && it->second != origen) {
++    REXLOG_WARN("[deko3d] remapeo de interpoladores: colision del identificador {:08X}; se dibuja sin remapear", id);
++    return 0;
++  }
++  uint32_t mascara = 0;
++  for (uint32_t l = 0; l < 32; ++l) {
++    if (mascara_vs & (1u << l)) mascara |= 1u << origen[l];
++  }
++  mascara_vs = mascara;
++  if (nuevo && remapeos_.size() <= 64) {
++    std::string pares;
++    for (uint32_t l = 0; l < 32; ++l) {
++      if (origen[l] != l) pares += fmt::format(" {}<-{}", l, origen[l]);
++    }
++    REXLOG_INFO("[deko3d] PS n{} con VS n{}: interpoladores enlazados por registro (ubicacion<-ubicacion):{}",
++                ps.numero, vs.numero, pares);
++  }
++  return kVarianteRemapeo | id;
++}
++
+ void RenderDk::RecogerCompilaciones() {
+   std::vector<std::pair<deko::CacheDksh::Clave, std::vector<uint8_t>>> hechas;
+   uint32_t fallidas = 0;
+@@ -1715,10 +1802,10 @@
+   AntesDe3D();  // a transfer recorded since the pass began (a cubemap's faces) is finished first
+ 
+   // --- Shaders
++  uint32_t mascara_vs = ps ? InfoDe(*ps).interpoladores : 0u;
++  if (ps) variante_ps |= RemapeoInterpoladores(p, *ps, mascara_vs);
+   const DkShader* vs = ShaderDe(*p.vs, especializacion,
+-                                REXCVAR_GET(nfsmw_dk_todas_las_salidas) ? kTodasLasSalidas
+-                                : ps                                    ? InfoDe(*ps).interpoladores
+-                                                                        : 0u);
++                                REXCVAR_GET(nfsmw_dk_todas_las_salidas) ? kTodasLasSalidas : mascara_vs);
+   const DkShader* fs = ps ? ShaderDe(*ps, especializacion, 0, variante_ps) : (fs_vacio_valido_ ? &fs_vacio_ : nullptr);
+   if (!vs || !fs) {
+     return Rechazar(60, "shader sin DKSH");
+-- 
+2.43.0

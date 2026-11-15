@@ -15,7 +15,8 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
 git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from the Vulkan SDK.
 
 1. Clone and set up the SDKs: rexglue-sdk-nx pinned to `f961303` in `thirdparty/rexglue-sdk-nx` plus
-   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017`, DKSH cache entries up to 8 MiB), upstream rexglue-sdk `v0.10.0` in
+   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017`, DKSH cache entries up to 8 MiB, and `0018`, interpolators linked by
+   register as on the Xbox 360), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash

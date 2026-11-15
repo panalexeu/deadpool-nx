@@ -964,6 +964,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
             draw_trace_n_ = 0;
             draw_trace_cap_ = 3000;
             packet_trace_n_ = 0;
+            texturas_trazadas_.clear();
             REXLOG_INFO("[draws] full trace of the next frame (ZL + ZR + Left)");
           }
           AutomaticCollection();
@@ -2370,6 +2371,38 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       // deadpool-nx: a tiny texture (UE3's 1x1 white/black defaults, masks) is a value, not an image: its first 16
       // bytes as the GPU reads them (Deadpool's suit is clipped by one 1x1 texel and a few constants).
       const uint32_t ancho = (f[2] & 0x1FFF) + 1, alto = ((f[2] >> 13) & 0x1FFF) + 1, base = f[1] & 0x1FFFF000u;
+      // deadpool-nx: and every large texture of the traced frame as raw guest memory (tiled, as the GPU reads it),
+      // once each, to texturas_traza/ beside the NRO: decoded on the PC, it shows whether the game's bytes are the
+      // image the renderer drew (Deadpool's suit showed as bare muscle).
+      if (base && ancho * alto >= 256 * 256 && texturas_trazadas_.size() < 48 &&
+          texturas_trazadas_.insert(base).second) {
+        const uint32_t formato = f[1] & 0x3F;
+        // Bytes per 4x4 block (compressed formats) or per texel; tiled storage is padded to 32x32 blocks.
+        const bool bloques = (formato >= 18 && formato <= 20) || formato == 49 || formato == 50 ||
+                             formato == 58 || formato == 59 || formato == 60 || formato == 61;
+        const uint32_t bpb = formato == 18 || formato == 59 || formato == 60 ? 8
+                             : bloques                                      ? 16
+                             : formato == 2 || formato == 8                 ? 1
+                             : formato == 4 || formato == 5 || formato == 15 || formato == 10 || formato == 24 ? 2
+                             : formato == 26 || formato == 32 || formato == 34                         ? 8
+                             : formato == 35                                                             ? 16
+                                                                                                         : 4;
+        const uint32_t bw = bloques ? (ancho + 3) / 4 : ancho, bh = bloques ? (alto + 3) / 4 : alto;
+        const uint64_t bytes = uint64_t((bw + 31) & ~31u) * ((bh + 31) & ~31u) * bpb;
+        if (bytes <= (16u << 20)) {
+          static const std::filesystem::path carpeta = rex::filesystem::GetExecutableFolder() / "texturas_traza";
+          std::error_code ec;
+          std::filesystem::create_directories(carpeta, ec);
+          char nombre[96];
+          std::snprintf(nombre, sizeof(nombre), "%08X_%ux%u_f%u_t%u_s%02X_%08X.bin", base, ancho, alto, formato,
+                        (f[0] >> 31) & 1, (f[0] >> 2) & 0xFF, f[3]);
+          if (FILE* out = std::fopen((carpeta / nombre).string().c_str(), "wb")) {
+            std::fwrite(memory_->TranslatePhysical(base), 1, size_t(bytes), out);
+            std::fclose(out);
+          }
+          REXLOG_INFO("[draws]         s{} raw texture -> texturas_traza/{} ({} bytes)", reg, nombre, bytes);
+        }
+      }
       if (base && ancho * alto <= 16) {
         const uint8_t* d = memory_->TranslatePhysical(base);
         std::string b;
@@ -2862,6 +2895,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   uint64_t clears_logged_1x_ = 0;
   std::unordered_set<uint64_t> glow_logged_;
   std::unordered_set<uint64_t> unknown_vs_logged_;
+  std::unordered_set<uint32_t> texturas_trazadas_;  // texture bases written by the frame trace
   uint32_t glow_draws_logged_ = 0;
   bool draw_tracing_ = false;
   uint32_t draw_traces_ = 0, draw_trace_n_ = 0, draw_trace_cap_ = 400;
