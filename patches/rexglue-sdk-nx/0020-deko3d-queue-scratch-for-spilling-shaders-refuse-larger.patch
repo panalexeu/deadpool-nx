@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 20:10:00 +0200
+Subject: [PATCH] deko3d: queue scratch for spilling shaders; refuse a shader that needs more
+
+The queue was created with deko3d's default scratch (2 KB per warp). Deadpool's first level draws a vertex shader
+that uses 255 registers and spills 321 KB per warp: the GPU faulted on it and the game closed while loading the
+level ("la cola de deko3d esta en error"). The queue now gets dk_scratch_kb (364 KB, the largest need in Deadpool's
+cache), and Nucleo::CargarShader refuses a shader whose per-warp scratch is above it, logging it.
+
+---
+diff --git a/include/rex/ui/deko3d/nucleo.h b/include/rex/ui/deko3d/nucleo.h
+--- a/include/rex/ui/deko3d/nucleo.h
++++ b/include/rex/ui/deko3d/nucleo.h
+@@ -72,6 +72,9 @@
+   void Destruir();
+ 
+   DkDevice dispositivo() const { return dispositivo_; }
++  // Scratch (local) memory per warp the queue was created with (dk_scratch_kb): a shader that needs more is refused
++  // by Nucleo::CargarShader instead of faulting the GPU.
++  uint32_t scratch_por_warp() const { return scratch_por_warp_; }
+ 
+   // Memory blocks and swapchains of every thread are created and destroyed here, under their own lock (deko3d
+   // does not say its device is safe to share for that). The log is flushed first: a failure ends the process.
+@@ -95,6 +98,7 @@
+  private:
+   DkDevice dispositivo_ = nullptr;
+   DkQueue cola_ = nullptr;
++  uint32_t scratch_por_warp_ = 0;
+   std::mutex candado_;
+   std::mutex creaciones_;
+ };
+diff --git a/src/ui/deko3d/nucleo.cpp b/src/ui/deko3d/nucleo.cpp
+--- a/src/ui/deko3d/nucleo.cpp
++++ b/src/ui/deko3d/nucleo.cpp
+@@ -2,6 +2,8 @@
+ 
+ #include <rex/ui/deko3d/nucleo.h>
+ 
++#include <rex/cvar.h>
++
+ #include <switch.h>
+ 
+ #include <algorithm>
+@@ -88,6 +90,14 @@
+   std::abort();
+ }
+ 
++REXCVAR_DEFINE_INT32(dk_scratch_kb, 364, "Deko3d",
++                     "Scratch (local) memory per warp of the deko3d queue, in KB. deko3d's default is 2 KB; shaders "
++                     "uam compiles with register spills need more (Deadpool: 354 variants, up to 363 KB, the vertex "
++                     "shader of its first level 321 KB), and one that needs more than the queue has faults the GPU. "
++                     "Such a shader is refused (its draws are skipped) instead")
++    .range(2, 4096)
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
+ // ---- Device and queue
+ 
+ Dispositivo::~Dispositivo() { Destruir(); }
+@@ -107,6 +117,11 @@
+              (zcull ? DkQueueFlags_EnableZcull : DkQueueFlags_DisableZcull);
+   qm.commandMemorySize = 1u << 20;
+   qm.flushThreshold = qm.commandMemorySize / 8;
++  qm.perWarpScratchMemorySize =
++      (uint32_t(REXCVAR_GET(dk_scratch_kb)) * 1024u + DK_PER_WARP_SCRATCH_MEM_ALIGNMENT - 1) &
++      ~uint32_t(DK_PER_WARP_SCRATCH_MEM_ALIGNMENT - 1);
++  scratch_por_warp_ = qm.perWarpScratchMemorySize;
++  Registro("[dk] cola: %u bytes de scratch por warp", scratch_por_warp_);
+   Registro("[dk] creando la cola: graficos, ZCULL %s", zcull ? "activo" : "apagado");
+   VaciarRegistro();
+   cola_ = dkQueueCreate(&qm);
+@@ -531,6 +546,17 @@
+              c.programas);
+     return false;
+   }
++  // The program header (uam's DkshProgramHeader): per_warp_scratch_sz at 20. More than the queue has: the GPU would
++  // fault on its first draw (Deadpool's first level, the whole game closing with "la cola de deko3d esta en error").
++  if (uint64_t(c.programas_offset) + 24 <= dksh.size() && disp_) {
++    uint32_t scratch = 0;
++    std::memcpy(&scratch, dksh.data() + c.programas_offset + 20, 4);
++    if (scratch > disp_->scratch_por_warp()) {
++      Registro("[dk] shader %s: necesita %u bytes de scratch por warp y la cola tiene %u: no se carga", nombre, scratch,
++               disp_->scratch_por_warp());
++      return false;
++    }
++  }
+   const uint32_t at = Alinear(codigo_usado_, DK_SHADER_CODE_ALIGNMENT);
+   if (uint64_t(at) + c.bytes_codigo > (config_.mb_codigo << 20) - DK_SHADER_CODE_UNUSABLE_SIZE) {
+     Registro("[dk] memoria de codigo llena: %s (%u bytes) no se carga", nombre, c.bytes_codigo);
+-- 
+2.43.0
