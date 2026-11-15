@@ -899,6 +899,9 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
       case xenos::PM4_XE_SWAP:
 #if DEADPOOL_DEKO3D
+        if (draw_tracing_ && destinos_ && base_limpia_en_fotograma_) {
+          destinos_->VolcarProfundidad(escena_z_info_, escena_z_pitch_, 0xC0C);
+        }
         FrameTraceSwap();
 #endif
         // VdSwap writes "SWAP", the frontbuffer's physical address and its size. The renderer presents whatever is
@@ -1771,6 +1774,12 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         prepaso_en_fotograma_) {
       if (!base_limpia_en_fotograma_) {
         base_limpia_en_fotograma_ = true;
+        // Frame dump: the scene depth as the prepass (and whatever ran after it) left it, before this clear (B0B), and
+        // at the end of the frame (C0C, the base pass's own depth): compared with the game's copy right after the
+        // prepass, they show why the base pass fails against the prepass's depth.
+        escena_z_info_ = Register(g::XE_GPU_REG_RB_DEPTH_INFO);
+        escena_z_pitch_ = Register(g::XE_GPU_REG_RB_SURFACE_INFO) & 0x3FFF;
+        if (draw_tracing_ && destinos_) destinos_->VolcarProfundidad(escena_z_info_, escena_z_pitch_, 0xB0B);
         ClearSceneDepthOnly();
         ++base_depth_clears_;
       }
@@ -2979,6 +2988,7 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::unordered_set<uint32_t> texturas_trazadas_;
   uint64_t base_z_writes_ = 0;  // deadpool_pase_base_escribe_z: draws given depth writes
   bool prepaso_en_fotograma_ = false, base_limpia_en_fotograma_ = false;  // deadpool_pase_base_propia_z
+  uint32_t escena_z_info_ = 0, escena_z_pitch_ = 0;  // the scene depth the base pass used (frame dump)
   uint64_t base_depth_clears_ = 0;  // texture bases written by the frame trace
   uint32_t glow_draws_logged_ = 0;
   bool draw_tracing_ = false;
