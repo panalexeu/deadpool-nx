@@ -64,4 +64,6 @@ if [ "$(grep -vc '^#' "$out/shaders/fallidas.txt")" -gt 0 ]; then
   "$out/bin/dksh_merge" "$out/shaders/shadercache_merged.bin" "$out/shaders/shadercache_dksh.bin" \
     "$out/shaders/nfsmw_dksh.bin" && mv "$out/shaders/shadercache_merged.bin" "$out/shaders/shadercache_dksh.bin"
 fi
+# The remapped pixel shaders the console listed in earlier sessions (tools/switch/remap_variants.sh).
+"$root/tools/switch/remap_variants.sh"
 ls -la "$out/shaders/deadpool_shaders.dslib" "$out/shaders/shadercache_dksh.bin" "$out/shaders/info_shaders.bin"

@@ -24,6 +24,9 @@
 #include "../ds_shader_library.h"
 #include "uam_api.h"
 
+#include <array>
+#include <span>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -76,6 +79,11 @@ struct Variante {
   uint32_t especializacion = 0;
   uint32_t salidas = ~0u;
   bool z_temprana = false;  // pixel shader with layout(early_fragment_tests) (the renderer's kVarianteZTemprana)
+  // A pixel shader with its inputs moved (the renderer's RemapeoInterpoladores, SDK 0019): `variante` is the
+  // renderer's whole variant value (kVarianteRemapeo, the remap's id, early depth) and `origen` the 32 locations.
+  bool remapeo = false;
+  uint32_t variante = 0;
+  std::array<uint8_t, 32> origen{};
 };
 
 // The renderer's DeclararZTemprana (sdk/src/x360/deko/dibujos.cpp), the same text in the same place: the console
@@ -141,9 +149,9 @@ struct Compilado {
 };
 
 Compilado Compilar(const std::vector<uint32_t>& spirv, uint32_t especializacion, uint32_t salidas,
-                   const fs::path& archivo_glsl, bool z_temprana = false) {
+                   const fs::path& archivo_glsl, bool z_temprana = false, std::span<const uint8_t> origen = {}) {
   Compilado c;
-  rex::deko3d::GlslDeko g = rex::deko3d::SpirvAGlsl(spirv, especializacion, salidas);
+  rex::deko3d::GlslDeko g = rex::deko3d::SpirvAGlsl(spirv, especializacion, salidas, origen);
   if (z_temprana && !g.glsl.empty()) DeclararZTemprana(g.glsl);
   if (g.glsl.empty()) {
     c.motivo = "conversion: " + g.error;
@@ -304,6 +312,7 @@ int main(int argc, char** argv) try {
   // --variantes: the variants the console asked for and this cache lacked (the renderer logs each one it compiles in
   // the background: "VS n891 00000000 0000001F ... (huella 1234...)"), one per line: huella, specialization value and
   // variant, in hex. A vertex shader's variant is the interpolators it keeps; a pixel shader's, 1 for early depth.
+  // A 4th field (cache/variantes_remapeo.txt): a remapped pixel shader's 32 input locations, 64 hex digits.
   if (solo_variantes) trabajo.clear();
   if (!variantes.empty()) {
     std::map<uint64_t, size_t> por_huella;
@@ -314,17 +323,29 @@ int main(int argc, char** argv) try {
     for (std::string linea; std::getline(f, linea);) {
       unsigned long long huella = 0;
       unsigned espec = 0, variante = 0;
-      if (linea.empty() || linea[0] == '#' || std::sscanf(linea.c_str(), "%llx %x %x", &huella, &espec, &variante) != 3)
-        continue;
+      char origen_hex[80] = {};
+      const int campos = linea.empty() || linea[0] == '#'
+                             ? 0
+                             : std::sscanf(linea.c_str(), "%llx %x %x %79s", &huella, &espec, &variante, origen_hex);
+      if (campos < 3) continue;
       const auto it = por_huella.find(huella);
       if (it == por_huella.end()) {
         ++sin_shader;  // a shader whose SPIR-V has changed since the list was made
         continue;
       }
-      if (shaders[it->second].vertices)
+      if (shaders[it->second].vertices) {
         trabajo.push_back({it->second, espec, variante});
-      else
+      } else if (campos == 4 && std::strlen(origen_hex) == 64) {
+        Variante v{it->second, espec, ~0u, (variante & 1) != 0, true, variante};
+        for (int k = 0; k < 32; ++k) {
+          unsigned b = 0;
+          std::sscanf(origen_hex + 2 * k, "%2x", &b);
+          v.origen[k] = uint8_t(b);
+        }
+        trabajo.push_back(v);
+      } else {
         trabajo.push_back({it->second, espec, ~0u, (variante & 1) != 0});
+      }
       ++anadidas;
     }
     std::printf("%zu variantes de %s (%zu de shaders que ya no estan)\n", anadidas, variantes.string().c_str(), sin_shader);
@@ -342,7 +363,7 @@ int main(int argc, char** argv) try {
       const auto& s = shaders[v.shader];
       const rex::deko3d::CacheDksh::Clave clave{rex::deko3d::HuellaSpirv(s.spirv),
                                                v.especializacion & mascaras[v.shader],
-                                               s.vertices ? v.salidas : (v.z_temprana ? 1u : 0u)};
+                                               s.vertices ? v.salidas : v.remapeo ? v.variante : (v.z_temprana ? 1u : 0u)};
       if (hechas.insert(clave).second) tareas.push_back({v, clave});
     }
   }
@@ -387,7 +408,8 @@ int main(int argc, char** argv) try {
     const Tarea& t = tareas[i];
     const auto& s = shaders[t.v.shader];
     const auto t0 = std::chrono::steady_clock::now();
-    Compilado c = Compilar(s.spirv, t.clave.especializacion, s.vertices ? t.v.salidas : ~0u, archivo_glsl(t), t.v.z_temprana);
+    Compilado c = Compilar(s.spirv, t.clave.especializacion, s.vertices ? t.v.salidas : ~0u, archivo_glsl(t), t.v.z_temprana,
+                   t.v.remapeo ? std::span<const uint8_t>(t.v.origen) : std::span<const uint8_t>());
     anotar(i, Resultado::kOk, std::move(c),
            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
   }
@@ -423,7 +445,8 @@ int main(int argc, char** argv) try {
         close(tubo[0]);
         const auto& s = shaders[t.v.shader];
         const std::string d = Serializar(
-            Compilar(s.spirv, t.clave.especializacion, s.vertices ? t.v.salidas : ~0u, archivo_glsl(t), t.v.z_temprana));
+            Compilar(s.spirv, t.clave.especializacion, s.vertices ? t.v.salidas : ~0u, archivo_glsl(t), t.v.z_temprana,
+                   t.v.remapeo ? std::span<const uint8_t>(t.v.origen) : std::span<const uint8_t>()));
         for (size_t at = 0; at < d.size();) {
           const ssize_t n = write(tubo[1], d.data() + at, d.size() - at);
           if (n <= 0) _exit(3);

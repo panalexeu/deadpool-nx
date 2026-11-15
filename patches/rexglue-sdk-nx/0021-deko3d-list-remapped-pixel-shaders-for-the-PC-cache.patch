@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 21:00:00 +0200
+Subject: [PATCH] deko3d: list the remapped pixel shaders the game uses, for the PC cache
+
+Each remap variant (0019) the game uses is appended once per session to cache/variantes_remapeo.txt: SPIR-V
+fingerprint, specialization, variant and the 32 input locations. tools/switch/remap_variants.sh compiles them on the PC
+(ds_dksh --variantes takes the 4th field) into shadercache_dksh.bin, so the console stops compiling them.
+
+---
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -474,6 +474,7 @@
+   const EntradaShader* exportaciones_vs_ = nullptr;
+   std::array<uint8_t, 16> exportaciones_{};
+   std::unordered_map<uint32_t, std::array<uint8_t, 32>> remapeos_;
++  std::unordered_set<uint64_t> remapeos_anotados_;  // remap variants already listed in cache/variantes_remapeo.txt
+   // InfoDe's results from earlier sessions, by container fingerprint (cache/info_shaders.bin): a pixel shader's first
+   // use converted its whole SPIR-V to GLSL only to learn its interpolators, ~5-10 ms each on the ring thread (most of
+   // the lightning freeze once the reads were gone). info_sucia_: new entries since the last save.
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -26,6 +26,9 @@
+ 
+ #include <rex/ui/deko3d/compilador.h>
+ #include <rex/ui/deko3d/glsl.h>
++#include <rex/filesystem.h>
++#include <filesystem>
++#include <cstdio>
+ #include <rex/x360/deko/render.h>
+ #include <rex/x360/shader_entry.h>
+ #include <rex/x360/xenos.h>
+@@ -959,6 +962,19 @@
+     return it->second.get();
+   }
+   const deko::CacheDksh::Clave clave_cache{info.huella, espec, variante};
++  // A remapped pixel shader (RemapeoInterpoladores): each one the game uses is listed once per session in
++  // cache/variantes_remapeo.txt (SPIR-V fingerprint, specialization, variant, the 32 location bytes in hex), whether
++  // the cache had it or not: tools/switch/shaders.sh compiles that list on the PC (ds_dksh --variantes reads the 4th
++  // field), so the console stops compiling them. Duplicates across sessions are dropped there.
++  if (!origen.empty() && remapeos_anotados_.insert(XXH3_64bits(&clave_cache, sizeof(clave_cache))).second) {
++    const std::filesystem::path ruta = rex::filesystem::GetExecutableFolder() / "cache" / "variantes_remapeo.txt";
++    if (std::FILE* f = std::fopen(ruta.string().c_str(), "a")) {
++      std::fprintf(f, "%016llX %08X %08X ", static_cast<unsigned long long>(info.huella), espec, variante);
++      for (const uint8_t o : origen) std::fprintf(f, "%02X", o);
++      std::fprintf(f, "\n");
++      std::fclose(f);
++    }
++  }
+   char nombre[64];
+   std::snprintf(nombre, sizeof(nombre), "%s n%u %08X %08X", entrada.vertices ? "VS" : "PS", entrada.numero, espec,
+                 variante);
+-- 
+2.43.0

@@ -1,0 +1,2 @@
+# Remapped pixel shaders (SDK 0019) the console used: copy cache/variantes_remapeo.txt from the card here and run
+# tools/switch/remap_variants.sh (shaders.sh runs it too). Fingerprint, specialization, variant, 32 locations.
