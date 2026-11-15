@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 21:20:00 +0200
+Subject: [PATCH] deko3d: the equality depth bias in units from a setting
+
+nfsmw_dk_sesgo_igualdad pulled a GEQUAL/LEQUAL colour pass 4 units towards passing against a depth prepass drawn
+with another vertex shader. With Deadpool's prepass drawn, 4 units were not enough and the world came out black.
+nfsmw_dk_sesgo_igualdad_unidades (default 4) sets the pull.
+
+---
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -74,6 +74,11 @@
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_todas_las_salidas, false, "NFSMW",
+                     "deko3d (depuracion): los vertex shaders siempre con todos sus interpoladores, no solo los que lee "
+                     "el pixel shader");
++REXCVAR_DEFINE_INT32(nfsmw_dk_sesgo_igualdad_unidades, 4, "NFSMW",
++                     "nfsmw_dk_sesgo_igualdad's pull, in depth units (the constant factor of the depth bias). 4 was "
++                     "enough for Gears of War 2; with Deadpool's depth prepass drawn the base pass still failed it "
++                     "(the whole world black)")
++    .range(1, 1 << 20);
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_sesgo_igualdad, true, "NFSMW",
+                     "deko3d: los dibujos de color que prueban la profundidad con GEQUAL o LEQUAL sin sesgo propio se "
+                     "acercan 4 unidades: pasan donde un pase previo de solo profundidad escribio la misma superficie "
+@@ -1422,10 +1427,11 @@
+   if (REXCVAR_GET(nfsmw_dk_sesgo_igualdad) && tipo >= 4 && modo_edram == uint32_t(xenos::EdramMode::kColorDepth) &&
+       sesgo[0] == 0.0f && sesgo[1] == 0.0f && (control_profundidad & 0x2)) {
+     const uint32_t funcion_z = (control_profundidad >> 4) & 0x7;
++    const float unidades = float(REXCVAR_GET(nfsmw_dk_sesgo_igualdad_unidades));
+     if (funcion_z == 6) {
+-      sesgo[0] = 4.0f;  // GEQUAL
++      sesgo[0] = unidades;  // GEQUAL
+     } else if (funcion_z == 3) {
+-      sesgo[0] = -4.0f;  // LEQUAL
++      sesgo[0] = -unidades;  // LEQUAL
+     }
+   }
+   const bool con_sesgo = sesgo[0] != 0.0f || sesgo[1] != 0.0f;
+-- 
+2.43.0
