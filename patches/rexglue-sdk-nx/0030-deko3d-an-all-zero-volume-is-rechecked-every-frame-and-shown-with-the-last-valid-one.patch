@@ -1,0 +1,71 @@
+Subject: [PATCH] deko3d: an all-zero volume texture rechecked every frame, shown with the last valid one meanwhile
+
+Deadpool's colour grading tables (32x32x32, read by the final tone mapping) are switched during play; one
+read before its data was streamed in turned the whole picture black under the UI until it arrived.
+
+---
+--- a/src/x360/deko/texturas.cpp
++++ b/src/x360/deko/texturas.cpp
+@@ -1043,12 +1043,40 @@
+     }
+     // 3D textures have no raw fingerprint: the untiled data decides.
+     const uint64_t huella = XXH3_64bits(temporal_.data(), temporal_.size());
++    // deadpool-nx: a volume of nothing but zero bytes has not been streamed in yet. Deadpool's colour grading tables
++    // (32x32x32, read by the final tone mapping pass) are switched during play, and one read before its data arrived
++    // made the whole picture black under the UI until it came. Such a volume is checked again every frame, and until
++    // its data comes it is uploaded with the last volume of the same size and format that had data (the previous
++    // grading table) instead of its zeros. Logged when it happens and when the data arrives ("[volumen]").
++    const bool vacio = std::all_of(temporal_.begin(), temporal_.end(), [](uint8_t x) { return x == 0; });
+     if (textura.con_contenido && huella == textura.huella_cruda) {
+-      textura.intervalo = std::min<uint32_t>(textura.intervalo * 2, 32);
++      textura.intervalo = vacio ? 1 : std::min<uint32_t>(textura.intervalo * 2, 32);
+       textura.siguiente = fotograma_ + textura.intervalo;
+       return listo();
+     }
+     textura.huella_cruda = huella;
++    if (vacio) {
++      if (!textura.volumen_vacio_desde) {
++        textura.volumen_vacio_desde = fotograma_;
++        REXLOG_WARN("[volumen] {:08X} {}x{}x{} formato {}: todo a cero (aun sin cargar?); se recomprueba cada fotograma{}",
++                    base, ancho, alto, fondo, formato,
++                    volumen_valido_.size() == temporal_.size() && volumen_valido_formato_ == formato
++                        ? ", mientras con el ultimo volumen igual con datos"
++                        : "");
++      }
++      if (volumen_valido_.size() == temporal_.size() && volumen_valido_formato_ == formato) {
++        temporal_ = volumen_valido_;
++      }
++    } else {
++      if (textura.volumen_vacio_desde) {
++        REXLOG_INFO("[volumen] {:08X}: datos tras {} fotogramas a cero", base, fotograma_ - textura.volumen_vacio_desde);
++        textura.volumen_vacio_desde = 0;
++      }
++      if (temporal_.size() <= (1u << 20)) {
++        volumen_valido_ = temporal_;
++        volumen_valido_formato_ = formato;
++      }
++    }
+   } else {
+     for (uint32_t c = 0; c < (leer_base ? capas : 0u); ++c) {
+       if (!LeerNivel(dir_base + c * zancada_cara, mosaico, pitch_bloques,
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -119,6 +119,7 @@
+   // The last upload had a whole mip level of zero bytes: most likely not streamed in yet, so it is checked again every
+   // frame (and not by sample, nor deferred) until the data arrives.
+   bool nivel_vacio = false;
++  uint64_t volumen_vacio_desde = 0;  // a volume read as all zeros: the frame it was first seen so (0: has data)
+   uint64_t bytes = 0;
+   std::array<uint64_t, 6> caras_version{};  // a cubemap of resolved faces: the version of each face it holds
+ };
+@@ -626,6 +627,10 @@
+   uint64_t suelta_por_descriptores_ = 0;  // frame of the last release forced by the descriptor table
+   std::unordered_map<uint64_t, uint32_t> samplers_;  // key -> descriptor
+   uint32_t avisos_nivel_vacio_ = 0;
++  // The last volume texture read with data (untiled, host order), up to 1 MB, and its guest format: an all-zero
++  // volume of the same size and format is uploaded with it until its own data arrives (PrepararTextura).
++  std::vector<uint8_t> volumen_valido_;
++  uint32_t volumen_valido_formato_ = 0;
+   uint32_t siguiente_sampler_ = 1;
+   std::array<ImagenDk, 3> vacias_;
+   std::vector<uint8_t> temporal_;  // untiled texture levels before they go to the upload ring
