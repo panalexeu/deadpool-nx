@@ -34,7 +34,7 @@ Subject: [PATCH] switch: guest threads on the core of the Xbox hardware thread t
  
    // TODO(tomc): do we need thread notifications (related to processor thread management)?
  
-@@ -911,7 +928,26 @@
+@@ -911,7 +928,33 @@
  }
  
  void XThread::SetAffinity(uint32_t affinity) {
@@ -51,10 +51,17 @@ Subject: [PATCH] switch: guest threads on the core of the Xbox hardware thread t
 +  if (!REXCVAR_GET(switch_nucleos_del_juego) || !is_guest_thread() || !thread_ || cpu_index >= 6) {
 +    return;
 +  }
-+  const uint32_t nucleo = cpu_index / 2;
++  const uint8_t nucleo = cpu_index / 2;
++  if (nucleo == nucleo_del_juego_) {
++    return;  // already there: no system call (a job thread re-placed itself thousands of times a session)
++  }
++  const bool primera = nucleo_del_juego_ == 0xFF;
++  nucleo_del_juego_ = nucleo;
 +  thread_->set_affinity_mask(uint64_t(1) << nucleo);
-+  REXSYS_INFO("[nucleos] {} ({:08X}): hilo hardware {} de la Xbox ({}) -> nucleo {} de la Switch", thread_name_,
-+              guest_object(), cpu_index, origen, nucleo);
++  if (primera) {  // once per thread: each line is a write to the SD card
++    REXSYS_INFO("[nucleos] {} ({:08X}): hilo hardware {} de la Xbox ({}) -> nucleo {} de la Switch", thread_name_,
++                guest_object(), cpu_index, origen, nucleo);
++  }
 +#else
 +  (void)cpu_index;
 +  (void)origen;
@@ -64,12 +71,13 @@ Subject: [PATCH] switch: guest threads on the core of the Xbox hardware thread t
  uint8_t XThread::active_cpu() const {
 --- a/include/rex/system/xthread.h
 +++ b/include/rex/system/xthread.h
-@@ -368,6 +368,8 @@
+@@ -368,6 +368,9 @@
    void SetAffinity(uint32_t affinity);
    uint8_t active_cpu() const;
    void SetActiveCpu(uint8_t cpu_index);
 +  // Switch: the core of the Xbox hardware thread the game chose (switch_nucleos_del_juego).
 +  void NucleoDelJuego(uint8_t cpu_index, const char* origen);
++  uint8_t nucleo_del_juego_ = 0xFF;  // the Switch core NucleoDelJuego last applied (0xFF: none yet)
  
    bool GetTLSValue(uint32_t slot, uint32_t* value_out);
    bool SetTLSValue(uint32_t slot, uint32_t value);
