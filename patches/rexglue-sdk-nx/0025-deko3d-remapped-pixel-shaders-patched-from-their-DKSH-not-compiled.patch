@@ -1,0 +1,122 @@
+Subject: [PATCH] deko3d: remapped pixel shaders patched from their DKSH, never compiled
+
+A remapped pixel shader (interpolators linked by register) differs from the plain one only in the shader
+program header's generic input map and the IPA input locations: checked byte for byte against uam on 2,882
+library pixel shaders with random remaps. ShaderDe makes it from the base variant's DKSH in microseconds; the
+console no longer compiles remapped shaders.
+
+---
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -143,6 +143,43 @@
+ // The pixel shader's inputs re-pointed (RemapeoInterpoladores): this bit plus a hash of the remap in bits 8-31.
+ constexpr uint32_t kVarianteRemapeo = 0x80;
+ constexpr uint32_t kMascaraIdRemapeo = 0xFFFFFF00u;
++
++// A remapped pixel shader made from its compiled DKSH instead of compiling it again: uam's output for a pixel shader
++// whose inputs moved (SpirvAGlsl's origen_entradas) differs from the plain one only in (1) the shader program header's
++// generic input map (one byte per input location, at header + 0x18; the header is at code + 0x30) and (2) the input
++// location in each IPA instruction (bits 28-37: 0x80 + 16 x location + 4 x component). Checked byte for byte against uam
++// on 2,882 of the library's pixel shaders with random remaps (tools: scratch remap_check.py): identical in every case.
++// false (nothing changed) if the DKSH is not a single pixel shader program or a moved input would land on another.
++bool ParchearEntradasPs(std::vector<uint8_t>& dksh, std::span<const uint8_t> origen) {
++  uint32_t cabecera[6];
++  if (dksh.size() < sizeof(cabecera) || origen.size() < 32) return false;
++  std::memcpy(cabecera, dksh.data(), sizeof(cabecera));
++  const size_t codigo = cabecera[2], fin = std::min<size_t>(dksh.size(), size_t(cabecera[2]) + cabecera[3]);
++  if (cabecera[0] != 0x48534B44u || cabecera[5] != 1 || codigo + 0x80 > fin) return false;
++  const size_t sph = codigo + 0x30;
++  uint32_t tipo;
++  std::memcpy(&tipo, dksh.data() + sph, 4);
++  if ((tipo & 0x1F) != 2) return false;  // SphType 2: a pixel shader
++  uint8_t mapa[32], nuevo[32] = {};
++  std::memcpy(mapa, dksh.data() + sph + 0x18, 32);
++  for (size_t l = 0; l < 32; ++l) {
++    if (!mapa[l]) continue;
++    if (origen[l] >= 32 || nuevo[origen[l]]) return false;
++    nuevo[origen[l]] = mapa[l];
++  }
++  std::memcpy(dksh.data() + sph + 0x18, nuevo, 32);
++  for (size_t o = codigo + 0x80; o + 8 <= fin; o += 8) {
++    uint64_t w;
++    std::memcpy(&w, dksh.data() + o, 8);
++    if ((w >> 53) != 0x702) continue;  // IPA (scheduling words never have these bits)
++    const uint32_t a = uint32_t(w >> 28) & 0x3FF;
++    if (a < 0x80 || a >= 0x80 + 16 * 32) continue;
++    const uint32_t a2 = 0x80 + 16u * origen[(a - 0x80) / 16] + (a & 0xF);
++    w = (w & ~(uint64_t(0x3FF) << 28)) | (uint64_t(a2) << 28);
++    std::memcpy(dksh.data() + o, &w, 8);
++  }
++  return true;
++}
+ constexpr uint32_t kPalabraInvTamano = 90;
+ constexpr uint32_t kMaxVerticesPorDibujo = uint32_t(1) << 20;
+ constexpr uint32_t kUboBytesVs = 256 * 16;
+@@ -1015,6 +1052,24 @@
+     info_ns_.fetch_add(deko::AhoraNs() - inicio_carga, std::memory_order_relaxed);  // a first-time cost too
+     return cargado;
+   }
++  // A remapped pixel shader: its base variant's DKSH (or the plain one's) with the inputs moved (ParchearEntradasPs).
++  // Nothing is compiled: any vertex/pixel pairing the game makes works at once, the whole game through.
++  if (!origen.empty()) {
++    const uint32_t base = variante & ~(kVarianteRemapeo | kMascaraIdRemapeo);
++    const std::vector<uint8_t>* dksh = cache_.Buscar({info.huella, espec, base});
++    if (!dksh && base) dksh = cache_.Buscar({info.huella, espec, 0});
++    if (dksh) {
++      std::vector<uint8_t> parcheado = *dksh;
++      if (ParchearEntradasPs(parcheado, origen)) {
++        ++remapeos_parcheados_;
++        return cargar(parcheado);
++      }
++    }
++    if (remapeos_fallidos_++ < 16) {
++      REXLOG_WARN("[deko3d] {}: no se pudo parchear el remapeo ({}); se dibuja sin remapear", nombre,
++                  dksh ? "DKSH inesperado" : "sin DKSH base en la cache");
++    }
++  }
+   static const bool en_fondo = REXCVAR_GET(nfsmw_dk_compilar_en_fondo);
+   if (entrada.vertices && variante != kTodasLasSalidas && en_fondo &&
+       cache_.Buscar({info.huella, espec, kTodasLasSalidas})) {
+@@ -1055,8 +1110,9 @@
+       static const bool compilar = REXCVAR_GET(nfsmw_dk_compilar_variantes);
+       // A remapped one is compiled even so: it is not a faster form of the same image, the library shader reads
+       // the wrong interpolators (a pixel shader takes ~10-40 ms on the worker).
+-      deko::GlslDeko g = compilar || !origen.empty() ? deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas, origen)
+-                                                     : deko::GlslDeko{};
++      // Remapped ones are made by ParchearEntradasPs above, never compiled here.
++      deko::GlslDeko g = compilar && origen.empty() ? deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas, origen)
++                                                    : deko::GlslDeko{};
+       if (!g.glsl.empty()) {
+         if (variante_ps & kVarianteZTemprana) {
+           DeclararZTemprana(g.glsl);
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -476,6 +476,8 @@
+   std::unordered_map<uint32_t, std::array<uint8_t, 32>> remapeos_;
+   std::unordered_set<uint64_t> remapeos_anotados_;  // remap variants already listed in cache/variantes_remapeo.txt
+   std::string remapeos_pendientes_;                 // their lines, written by InformePeriodico
++  uint64_t remapeos_parcheados_ = 0;                // remapped pixel shaders made by patching (ParchearEntradasPs)
++  uint32_t remapeos_fallidos_ = 0;
+   std::string ausentes_pendientes_;                 // variants the PC cache lacks, listed by InformePeriodico
+   uint32_t ausentes_intervalo_ = 0;
+   void AnotarVarianteAusente(const char* nombre, uint64_t huella);
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -2551,7 +2551,7 @@
+       "indices, constantes, texturas); grabar un dibujo {:.2f} us en RenderDk (sin esperas a la GPU); texturas: {} vivas ({} MB), {} creadas "
+       "y {} subidas ({} MB) en el intervalo; lecturas de vuelta al invitado {}; {} trabajos, {} cambios de ranura por "
+       "subida llena en total, comandos max {} KB; imagenes {} MB en {} trozos; shaders: {} de la cache, {} compilados "
+-      "en el acto, {} en segundo plano (en total)",
++      "en el acto, {} en segundo plano, {} remapeados por parche (en total)",
+       segundos, fotogramas / segundos, double(dibujos) / fotogramas, rechazados_,
+       double(gpu_ns_ - informe_gpu_ns_) / 1e6 / fotogramas, gpu_trabajos_ - informe_gpu_trabajos_,
+       double(copias_ - informe_copias_) / fotogramas,
+@@ -2562,7 +2562,7 @@
+       bytes_texturas_ >> 20, texturas_creadas_ - informe_creadas_, texturas_subidas_ - informe_subidas_,
+       (bytes_subidos_ - informe_bytes_subidos_) >> 20, lecturas_escritas_ - informe_lecturas_, n.trabajos,
+       cambios_ranura_, n.bytes_comandos_max >> 10, n.bytes_imagenes >> 20, n.trozos_imagenes, aciertos_cache_,
+-      compilados_en_el_acto_, compilados_en_fondo_);
++      compilados_en_el_acto_, compilados_en_fondo_, remapeos_parcheados_);
+   const auto ms = [&](uint32_t c) { return double(gpu_categorias_ns_[c] - informe_categorias_[c]) / 1e6 / fotogramas; };
+   X360_INFORME(
+       "[deko3d] por fotograma: GPU sombras {:.2f} ms, escena {:.2f}, reflejo {:.2f}, 320 {:.2f}, menores {:.2f}, copias "
