@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 11:20:00 +0200
+Subject: [PATCH] deko3d: frame dump keeps room for the labelled depth snapshots
+
+In Deadpool's title scene the frame's own textures filled the 48 MB dump block and the end-of-frame depth snapshot
+was dropped without a word. 16 MB are kept for the labelled snapshots, and anything that does not fit is logged.
+
+---
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -2951,7 +2951,13 @@
+       return;
+   }
+   const uint32_t bytes = imagen.ancho * imagen.alto * bpp;
+-  if (volcado_.size() >= 64 || volcado_usados_ + bytes > kBytesVolcado) {
++  // The labelled depth snapshots (VolcarProfundidad, base DExxxxxx) keep 16 MB of the block for themselves: in Deadpool's
++  // title scene the frame's own textures filled it and the end-of-frame snapshot was dropped.
++  constexpr uint32_t kReservaEtiquetas = 16u << 20;
++  const bool etiqueta = (base >> 24) == 0xDE;
++  const uint32_t limite = etiqueta ? kBytesVolcado : kBytesVolcado - kReservaEtiquetas;
++  if (volcado_.size() >= 64 || volcado_usados_ + bytes > limite) {
++    REXLOG_INFO("[deko3d] volcado: {:08X} ({}x{}) no cabe; no se guarda", base, imagen.ancho, imagen.alto);
+     return;
+   }
+   AntesDeTransferir();
+-- 
+2.43.0
