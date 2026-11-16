@@ -1,0 +1,108 @@
+Subject: [PATCH] XMA: the worker sweeps only allocated contexts; ConvertFrame in NEON on ARM
+
+---
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -223,6 +223,11 @@
+  */
+ constexpr uint32_t kPalabrasPendientes = 10;  // 320 contextos / 32
+ std::atomic<uint32_t> g_pendientes[kPalabrasPendientes];
++// The allocated contexts, one bit each (set by AllocateContext, cleared by ReleaseContext): the worker's safety-net
++// sweep visits only these. It used to call Work on all 320, and Work's first atomic load of each context's own
++// cache line (most of them never allocated) was 13 % of the XMA thread (perf_report.py). Work answers false at once
++// for an unallocated context, so skipping them changes nothing.
++std::atomic<uint32_t> g_asignados[kPalabrasPendientes];
+ std::atomic<int64_t> g_pendiente_desde_ns{0};
+ 
+ int64_t AhoraNs() {
+@@ -360,14 +365,19 @@
+     // without a mark. Only when there were no pending ones, so the 320 locks are not walked after every
+     // kick and the fast loop keeps the work being counted.
+     if (!habia_pendientes) {
+-      for (uint32_t n = 0; n < kContextCount && worker_running_; n++) {
+-        XmaContext& context = contexts_[n];
+-        bool worked = context.Work();
+-        if (worked) {
+-          context.SignalWorkDone();
+-          PROFILE_XMA_FRAME_DECODED();
++      for (uint32_t palabra = 0; palabra < kPalabrasPendientes && worker_running_; ++palabra) {
++        uint32_t bits = g_asignados[palabra].load(std::memory_order_acquire);
++        uint32_t indice = 0;
++        while (rex::bit_scan_forward(bits, &indice)) {
++          bits &= ~(1u << indice);
++          XmaContext& context = contexts_[palabra * 32 + indice];
++          bool worked = context.Work();
++          if (worked) {
++            context.SignalWorkDone();
++            PROFILE_XMA_FRAME_DECODED();
++          }
++          did_work = did_work || worked;
+         }
+-        did_work = did_work || worked;
+       }
+     }
+ 
+@@ -440,6 +450,7 @@
+   XmaContext& context = contexts_[index];
+   assert_false(context.is_allocated());
+   context.set_is_allocated(true);
++  g_asignados[index / 32].fetch_or(1u << (index % 32), std::memory_order_release);
+   return context.guest_ptr();
+ }
+ 
+@@ -450,6 +461,7 @@
+   XmaContext& context = contexts_[context_id];
+   assert_true(context.is_allocated());
+   context.Release();
++  g_asignados[context_id / 32].fetch_and(~(1u << (context_id % 32)), std::memory_order_release);
+   context_bitmap_.Release(context_id);
+ }
+ 
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -10,6 +10,9 @@
+ */
+ 
+ #include <algorithm>
++#if defined(__aarch64__)
++#include <arm_neon.h>
++#endif
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstring>
+@@ -1221,6 +1224,35 @@
+       _mm_storeu_si128(reinterpret_cast<__m128i*>(&out[i]), out_mm);
+     }
+   }
++#elif defined(__aarch64__)
++  // deadpool-nx: NEON, 8 samples a step, the same result as the scalar loop below bit for bit (checked on the PC with
++  // SIMDe's NEON over NaN, infinities, out-of-range and random samples): rex::clamp_float as compare-and-select (NaN
++  // becomes -1, as isgreater is false for it), * 32767, fcvtzs (truncation, as the scalar cast), narrow, byte swap,
++  // interleave for stereo. The scalar loop was 9 % of the XMA thread on the console.
++  static_assert(kSamplesPerFrame % 8 == 0);
++  const float32x4_t menos_uno = vdupq_n_f32(-1.0f), uno = vdupq_n_f32(1.0f), escala = vdupq_n_f32(scale);
++  auto convertir = [&](const float* p) {
++    int16x4_t mitades[2];
++    for (int k = 0; k < 2; ++k) {
++      float32x4_t v = vld1q_f32(p + 4 * k);
++      v = vbslq_f32(vcgtq_f32(v, menos_uno), v, menos_uno);
++      v = vbslq_f32(vcltq_f32(v, uno), v, uno);
++      mitades[k] = vmovn_s32(vcvtq_s32_f32(vmulq_f32(v, escala)));
++    }
++    return vreinterpretq_s16_u8(vrev16q_u8(vreinterpretq_u8_s16(vcombine_s16(mitades[0], mitades[1]))));
++  };
++  const auto in_channel_0 = reinterpret_cast<const float*>(samples[0]);
++  if (is_two_channel) {
++    const auto in_channel_1 = reinterpret_cast<const float*>(samples[1]);
++    for (uint32_t i = 0; i < kSamplesPerFrame; i += 8) {
++      int16x8x2_t par = {{convertir(in_channel_0 + i), convertir(in_channel_1 + i)}};
++      vst2q_s16(out + i * 2, par);
++    }
++  } else {
++    for (uint32_t i = 0; i < kSamplesPerFrame; i += 8) {
++      vst1q_s16(out + i, convertir(in_channel_0 + i));
++    }
++  }
+ #else
+   uint32_t o = 0;
+   for (uint32_t i = 0; i < kSamplesPerFrame; i++) {

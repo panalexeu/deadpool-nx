@@ -18,7 +18,7 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
    `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017` DKSH cache entries up to 8 MiB, `0018` interpolators linked
    by register as on the Xbox 360, `0019` queue scratch for spilling shaders, `0020` remapped pixel shaders listed for
    the PC cache, `0021` `invariant gl_Position` in every vertex shader and `0022` the profiler's raw samples, frame
-   times and CPU per core, `0023` the geometry cache swept a slice per frame, `0024` no SD work on the ring thread mid-frame, `0025` remapped pixel shaders patched instead of compiled, `0026` missing variants' fallback remembered, `0027` ring maps on a node pool), upstream rexglue-sdk `v0.10.0` in
+   times and CPU per core, `0023` the geometry cache swept a slice per frame, `0024` no SD work on the ring thread mid-frame, `0025` remapped pixel shaders patched instead of compiled, `0026` missing variants' fallback remembered, `0027` ring maps on a node pool, `0028` XMA sweep and NEON sample conversion), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash
