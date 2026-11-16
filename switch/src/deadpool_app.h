@@ -35,6 +35,7 @@
 #endif
 
 #include "deadpool_cpu.h"
+#include "deadpool_pgo.h"
 #include "deadpool_gpu.h"
 
 REXCVAR_DECLARE(int32_t, deadpool_resolution);
@@ -91,7 +92,16 @@ class DeadpoolApp : public rex::ReXApp {
     if (!folder.empty()) paths.game_data_root = folder / "deadpool-extract";
   }
 
-  void OnPostInitLogging() override { deadpool::cpu::InformarSistema(); }
+  void OnPostInitLogging() override {
+    deadpool::cpu::InformarSistema();
+    deadpool::pgo::Start();  // PGO=generate builds only: the profile counts to pgo/ (deadpool_pgo.cpp)
+  }
+
+  // The instrumented build's counts at HOME (the game is often closed from there, without an exit) and at exit.
+  void OnWindowFocusChanged(bool focused) override {
+    if (!focused) deadpool::pgo::DumpNow();
+  }
+  void OnShutdown() override { deadpool::pgo::Stop(); }
 
   void OnLoadXexImage(std::string& xex_image) override {
     std::error_code ec;

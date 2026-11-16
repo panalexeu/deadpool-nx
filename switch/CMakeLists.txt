@@ -26,6 +26,7 @@ add_executable(deadpool
     src/deadpool_guards.cpp
     src/deadpool_game_patches.cpp
     src/deadpool_perf_hooks.cpp
+    src/deadpool_pgo.cpp
     ${DEADPOOL_SHADER_TOOLS}/ds_shader_library.cpp
 )
 deadpool_setup_target(deadpool)
@@ -40,6 +41,38 @@ rexglue_switch_add_deko3d(deadpool)
 target_compile_definitions(deadpool PRIVATE DEADPOOL_DEKO3D=1)
 target_link_libraries(deadpool PRIVATE mspack)
 target_include_directories(deadpool PRIVATE ${DEADPOOL_SHADER_TOOLS} ${REXSDK_DIR}/thirdparty/xxHash)
+
+# Profile-guided optimisation (docs: README "Profile-guided build"). PGO=generate: an instrumented NRO that streams its
+# branch counts to pgo/ on the SD card (src/deadpool_pgo.cpp); tools/switch/pgo_merge.sh turns them into .gcda files in
+# DEADPOOL_PGO_DIR; PGO=use builds with them. The recompiled game, this app and the SDK runtime (renderer, GPU ring,
+# kernel, audio glue) are profiled; -fprofile-prefix-path makes the profile's names independent of the build folder.
+set(DEADPOOL_PGO "" CACHE STRING "Profile-guided optimisation: empty, generate or use")
+set(DEADPOOL_PGO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../pgo" CACHE PATH "Folder of the PGO profile (.gcda files)")
+if(DEADPOOL_PGO)
+    get_filename_component(_deadpool_pgo_dir "${DEADPOOL_PGO_DIR}" ABSOLUTE)
+    if(DEADPOOL_PGO STREQUAL "generate")
+        set(_deadpool_pgo "-fprofile-generate=${_deadpool_pgo_dir}" "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+                          -fno-profile-values -fprofile-update=single -fprofile-info-section=gcov_info)
+        target_compile_definitions(deadpool PRIVATE DEADPOOL_PGO_GENERATE=1)
+        target_link_options(deadpool PRIVATE "-fprofile-generate=${_deadpool_pgo_dir}")
+    elseif(DEADPOOL_PGO STREQUAL "use")
+        file(GLOB _deadpool_pgo_gcda "${_deadpool_pgo_dir}/*.gcda")
+        if(NOT _deadpool_pgo_gcda)
+            message(FATAL_ERROR "DEADPOOL_PGO=use: no profile in ${_deadpool_pgo_dir} (tools/switch/pgo_merge.sh)")
+        endif()
+        set(_deadpool_pgo "-fprofile-use=${_deadpool_pgo_dir}" "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+                          -fprofile-correction -fno-profile-values -fprofile-partial-training -Wno-missing-profile
+                          -Wno-coverage-mismatch)
+    else()
+        message(FATAL_ERROR "DEADPOOL_PGO must be empty, generate or use (got ${DEADPOOL_PGO})")
+    endif()
+    foreach(_t deadpool deadpool_recomp rexruntime rexcore rexaudio rexfilesystem libavcodec libavutil)
+        if(TARGET ${_t})
+            target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:${_deadpool_pgo}>")
+        endif()
+    endforeach()
+    message(STATUS "deadpool: PGO ${DEADPOOL_PGO} (${_deadpool_pgo_dir})")
+endif()
 
 set(DEADPOOL_VERSION "0.1")
 execute_process(COMMAND git rev-parse --short=10 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
