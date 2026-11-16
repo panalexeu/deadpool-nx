@@ -298,7 +298,65 @@ bool Biblioteca::cargada() const { return datos_->cargada; }
 namespace {
 // What comes from the SPIR-V (the container has no constant table): the samplers and their types, the elements a
 // vertex shader fetches itself, the pixel shader's kills.
+// The float-constant registers a shader reads, from its SPIR-V: the uniform block at descriptor set 4, binding 0 (vertex)
+// or 1 (pixel). Every read a static OpAccessChain(block, 0, N): N + 1 registers. Any other use of the block (a dynamic
+// index, the a0-relative reads of bone matrices, a load of the whole block, a pointer passed on): 0, the whole block.
+// Unreal Engine 3 strips the constant tables, so without this every draw compared and uploaded all 256 / 224 registers
+// (the renderer's EmpujarDiferencias, 9 % of the ring thread); the library reads 23 on average. Checked offline on all
+// 12,982 shaders against the HLSL's own reads (tools: scratch rango.py): never less than the source reads.
+uint32_t RegistrosConstantesDesdeSpirv(std::span<const uint32_t> w, uint32_t enlace) {
+  if (w.size() < 5 || w[0] != 0x07230203u) return 0;
+  std::unordered_map<uint32_t, uint32_t> constantes;
+  std::unordered_map<uint32_t, uint32_t> enlaces, conjuntos;
+  for (size_t i = 5; i < w.size();) {
+    const uint32_t op = w[i] & 0xFFFF, n = w[i] >> 16;
+    if (!n || i + n > w.size()) return 0;
+    if (op == 71 && n >= 4) {  // OpDecorate target Binding|DescriptorSet value
+      if (w[i + 2] == 33) enlaces[w[i + 1]] = w[i + 3];
+      if (w[i + 2] == 34) conjuntos[w[i + 1]] = w[i + 3];
+    }
+    if (op == 43 && n >= 4) constantes[w[i + 2]] = w[i + 3];  // OpConstant type id value
+    i += n;
+  }
+  uint32_t bloque = 0;
+  for (const auto& [id, b] : enlaces) {
+    if (b == enlace && conjuntos.count(id) && conjuntos[id] == 4) {
+      if (bloque) return 0;
+      bloque = id;
+    }
+  }
+  if (!bloque) return 1;  // the shader reads no float constant
+  int64_t maximo = -1;
+  for (size_t i = 5; i < w.size();) {
+    const uint32_t op = w[i] & 0xFFFF, n = w[i] >> 16;
+    const uint32_t* a = &w[i + 1];
+    const size_t na = n - 1;
+    auto usa = [&](size_t desde) {
+      for (size_t k = desde; k < na; ++k) {
+        if (a[k] == bloque) return true;
+      }
+      return false;
+    };
+    if ((op == 65 || op == 66) && na >= 3 && a[2] == bloque) {  // OpAccessChain / OpInBoundsAccessChain
+      if (na < 5 || !constantes.count(a[3]) || !constantes.count(a[4])) return 0;
+      maximo = std::max<int64_t>(maximo, constantes[a[4]]);
+    } else if ((op == 61 && na >= 3 && a[2] == bloque) ||                                       // OpLoad
+               ((op == 62 || op == 63) && (a[0] == bloque || (na > 1 && a[1] == bloque))) ||  // OpStore, OpCopyMemory
+               (op == 57 && usa(3)) ||                                                        // OpFunctionCall
+               ((op == 83 || op == 124 || op == 117 || op == 245 || op == 169 || op == 67 || op == 68 || op == 70) &&
+                usa(2))) {
+      return 0;
+    }
+    i += n;
+  }
+  return maximo < 0 ? 1 : uint32_t(maximo) + 1;
+}
+
 void DatosDelSpirv(const ds::Shader& shader, EntradaShader& e) {
+  // The constant registers this shader really reads (UE3 strips the tables: Leer assumed the whole block).
+  if (const uint32_t registros = RegistrosConstantesDesdeSpirv(e.spirv, e.vertices ? 0 : 1)) {
+    e.constantes_bytes = std::min<uint32_t>(e.constantes_bytes, registros * 16);
+  }
   if (e.samplers.empty() && shader.original.size() >= 20 && Contenedor{shader.original}.U32(16) == 0) {
     SamplersDesdeSpirv(e.spirv, e.samplers);
   }
