@@ -250,9 +250,32 @@ Comprobacion g_comp_lzx{"LZX (sub_823BB2B8)"};
 std::atomic<uint32_t> g_lzx_fallos{0};
 
 // 1 when the whole destination was produced natively, 0 on any failure (the caller then runs the original).
+// XMemDecompress's data is framed: each 32 KB output frame starts with its compressed size (big-endian 16 bits),
+// preceded by 0xFF and the frame's uncompressed size when that is not 32 KB; libmspack wants the LZX payloads alone,
+// one after the other (checked on the PC: 1,130 chunks from 400 of the game's packages decode to their sizes).
 bool LzxNativo(uint8_t* base, uint32_t destino, uint32_t tam_destino, uint32_t fuente, uint32_t tam_fuente) {
   if (tam_fuente < 4) return false;
-  return lzx_decompress(base + fuente, tam_fuente - 4, base + destino, tam_destino, 0x20000, nullptr, 0) == 0;
+  const uint8_t* in = base + fuente;
+  const size_t n = tam_fuente - 4;
+  thread_local std::vector<uint8_t> carga;
+  carga.clear();
+  carga.reserve(n);
+  for (size_t i = 0; i + 2 <= n;) {
+    size_t c;
+    if (in[i] == 0xFF) {
+      if (i + 5 > n) break;
+      c = (size_t(in[i + 3]) << 8) | in[i + 4];
+      i += 5;
+    } else {
+      c = (size_t(in[i]) << 8) | in[i + 1];
+      i += 2;
+    }
+    if (!c || i + c > n) break;
+    carga.insert(carga.end(), in + i, in + i + c);
+    i += c;
+  }
+  if (carga.empty()) return false;
+  return lzx_decompress(carga.data(), carga.size(), base + destino, tam_destino, 0x20000, nullptr, 0) == 0;
 }
 }  // namespace
 
