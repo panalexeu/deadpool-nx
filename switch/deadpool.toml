@@ -27,12 +27,8 @@ deadpool_oclusion_sin_esperar_ms = -1
 # screen-space shadows (the apartment's blinds) and depth of field (the first level all blurred) read that copy.
 deadpool_sin_prepaso_z = false
 deadpool_sin_prepaso_enmascarado = false
-# The base pass tests GEQUAL against the prepass's depth, as on the Xbox. It failed everywhere (the world black)
-# because the port gave the depth-only prepass (a 960-wide depth-only target) the renderer's shadow-map slope bias
-# (2.0): the prepass came out nearer by 2 x the surface's depth slope (measured: 3152 units median, predicted 3160).
-# Fixed in deadpool_gpu.cpp (nfsmw_dk_sombras_sesgo_pitch no longer lowered to 960).
-# true = the old workaround: clear the depth before the base pass and let it write its own.
-deadpool_pase_base_propia_z = false
+# The base pass then tests GEQUAL against the prepass's depth, as on the Xbox. (It failed everywhere, the world black,
+# while the port gave the prepass the renderer's shadow-map slope bias: fixed in deadpool_gpu.cpp.)
 # The first-person weapon's depth merged into the depth the depth of field reads (on). Off: in front of the sky or a
 # window the weapon was half replaced by the blurred background and looked see-through.
 deadpool_dof_arma = true

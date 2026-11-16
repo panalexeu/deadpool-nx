@@ -126,7 +126,7 @@ const char* Leer(const ds::Shader& shader, EntradaShader& e) {
 
   // deadpool-nx: the interpolator table (usage index bits 0-3, usage bits 4-7, register bits 8-11; count in bits
   // 5-9 of the header's word 0x14): after the vertex elements of a vertex shader, at 0x20 in a pixel shader. The
-  // renderer links by register with it (EntradaShader::ubicacion_interpolador, SDK 0019): D3D renumbers a vertex
+  // renderer links by register with it (EntradaShader::ubicacion_interpolador, SDK 0018): D3D renumbers a vertex
   // shader's exports for each pixel shader, and Deadpool's suit PS reads register 1 as TEXCOORD2 where its VS exports
   // the UV as TEXCOORD1.
   {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The remapped pixel shaders (SDK 0019, interpolators linked by register) the console used, compiled on the PC into
+# The remapped pixel shaders (SDK 0018, interpolators linked by register) the console used, compiled on the PC into
 # out/shaders/shadercache_dksh.bin, so the console stops compiling them while playing.
 #
 #   tools/switch/remap_variants.sh [list]

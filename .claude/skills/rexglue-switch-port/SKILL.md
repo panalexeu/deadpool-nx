@@ -95,7 +95,7 @@ Reading a frame dump:
 | Symptom | Mechanism | How it was proven / fix |
 |---|---|---|
 | Bottom of the screen red | Scene drawn in 2 MSAA predicated tiles; renderer drew one | `GUseTilingMode` found from the `TILING` console command; codegen patch stores 0 |
-| Whole world red | Depth prepass and base pass use separately compiled VS; last-bit difference, GEQUAL fails | Skip the depth-only prepass (`deadpool_sin_prepaso_z`) |
+| Whole world red/black (Singularity, Deadpool) | NOT shader rounding: the game set `nfsmw_dk_sombras_sesgo_pitch = 960`, so the 960-wide depth-only scene prepass got the shadow-map slope bias (2.0) and came out nearer by 2 x the depth slope; the base pass, GEQUAL, failed everywhere | Raw depth of prepass vs base pass: the gap matched 2 x max(dz/dx, dz/dy) (3152 vs 3160 units median). Keep the pitch at 1600 (no target that wide in these games); never let a renderer-added bias touch a non-shadow target |
 | Objects show a "staircase" of old frames | Same, for the alpha-tested prepass (colour+depth mode, colour masked) | Read from the screenshot (ragged alpha edge, old frames inside); `[estado]` histogram; skip that prepass too |
 | Effects missing (vortex, water, beams) on PC | Shader-written depth (oDepth) not scaled to the float24 mapping | Magenta shader → depth test off → visible; fix in translator |
 | Letters missing for a moment | Run-time written linear texture (font atlas) rechecked only every N frames | Frame dump showed the atlas stale; check linear textures every frame (SDK 0006) |

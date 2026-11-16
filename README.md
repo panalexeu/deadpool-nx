@@ -15,8 +15,9 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
 git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from the Vulkan SDK.
 
 1. Clone and set up the SDKs: rexglue-sdk-nx pinned to `f961303` in `thirdparty/rexglue-sdk-nx` plus
-   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017` DKSH cache entries up to 8 MiB, `0018` a stuck XMA context
-   detector and `0019` interpolators linked by register as on the Xbox 360), upstream rexglue-sdk `v0.10.0` in
+   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017` DKSH cache entries up to 8 MiB, `0018` interpolators linked
+   by register as on the Xbox 360, `0019` queue scratch for spilling shaders, `0020` remapped pixel shaders listed for
+   the PC cache and `0021` `invariant gl_Position` in every vertex shader), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash
@@ -75,14 +76,16 @@ instruction by instruction in the generated code:
 | Shader extractor | packages version 846, licensee 181: 16 more bytes before the folder name, the GUID fields of 623 | version 584 |
 
 `deadpool.toml` starts from singularity-nx's settings (1785 MHz CPU, 460 MHz GPU, 540p, no runtime shader compiles),
-except: the base pass writes depth (`deadpool_pase_base_escribe_z`, Deadpool's base pass relies on the skipped
-prepass for it) and Singularity's XMA and audio filter changes are off.
+except: the depth prepasses are drawn (Deadpool's screen-space shadows and depth of field read their depth), occlusion
+waits for the real count and never answers from the previous frame, Singularity's XMA and audio filter changes are off,
+and `nfsmw_dk_sombras_sesgo_pitch` keeps its default (1600): Singularity's 960 gave the 960-wide scene depth prepass the
+shadow-map slope bias, and the base pass, GEQUAL against it, failed on every pixel (the world black).
 
 ### Known issues
 
 - Bink movies are black: their YUV shaders are not in the shader library, and the renderer takes their draws for
   clears.
-- The register-linked interpolators (SDK `0019`) compile their remapped pixel shaders on the console the first time
+- The register-linked interpolators (SDK `0018`) compile their remapped pixel shaders on the console the first time
   (~10-40 ms each, in the background); they should become PC-built cache variants.
 
 ### License
