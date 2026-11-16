@@ -1585,14 +1585,19 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     // 0 -0.871). Direct3D's clear shader writes the rectangle's vertex COLOR; when that is a color in 0..1 on an 8-bit
     // target, it is the clear. UE3 clears its light attenuation buffer that way before a light function multiplies
     // into it; skipped, Singularity's projector slides multiplied into stale data with only red in it.
+    // deadpool-nx: and the vertex COLOR first whenever it is a color in 0..1, even when PS c0 also is one. PS c0 is not
+    // the clear's (Direct3D's clear shader does not read it): it is whatever the game's last pixel shader left there.
+    // Deadpool clears its UI layer (EDRAM 198) to (0,0,0,1) before drawing the HUD, then multiplies the tone-mapped
+    // scene by that layer's alpha. A stale PS c0 of (0,0,0,0) cleared the alpha to 0 instead, and the scene went black
+    // under the UI until some later shader happened to leave an alpha of 1 in c0.
     bool clear_vertex_color = false;
-    if (rect_shape && !rect_clear && clear_format <= 1) {
+    if (rect_shape && clear_format <= 1) {
       float c[4];
       if (ClearRectVertexColor(registers_.data(), c)) {
         clear_vertex_color = true;
         for (float v : c) clear_vertex_color = clear_vertex_color && v >= 0.0f && v <= 1.0f;
       }
-      rect_clear = clear_vertex_color;
+      rect_clear = rect_clear || clear_vertex_color;
     }
     // Gears of War 2 fills each shadow map with the far plane before drawing it: one rectangle, depth-only, depth
     // written with ALWAYS (depthcontrol 00000076), through a vertex shader of its own that is not in the library.
@@ -2177,6 +2182,15 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         // The rectangle's vertex color when PS c0 is not the color (Draw: clear_vertex_color).
         if (vertex_color) v = game_vertices ? game_color[j] : 0.0f;
         color |= uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)) << (j * 8);
+      }
+    } else if (((base.rb_color_info[0] >> 16) & 0xF) <= 1 && game_vertices) {
+      // deadpool-nx: a multisampled one onto an 8-bit target writes the rectangle's vertex color too (the same
+      // Direct3D clear shader). Deadpool clears its UI layer (198) a second time that way, right after the
+      // single-sampled clear, to (0,0,0,1); cleared to 0, its alpha 0 blacked out the scene under the HUD.
+      bool valido = true;
+      for (float v : game_color) valido = valido && std::isfinite(v) && v >= 0.0f && v <= 1.0f;
+      for (uint32_t j = 0; j < 4 && valido; ++j) {
+        color |= uint32_t(std::lround(game_color[j] * 255.0f)) << (j * 8);
       }
     }
     // A k_16_16 target: the clear rectangle's vertex color (its pixel shader's c0 holds 8, not the color: as the color,

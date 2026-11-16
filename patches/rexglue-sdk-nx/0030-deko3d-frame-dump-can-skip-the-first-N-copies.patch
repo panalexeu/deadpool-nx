@@ -1,0 +1,48 @@
+deko3d: the frame dump can skip the frame's first N copies (nfsmw_dk_volcado_saltar), so its 48 MB reach the end of a busy frame (tone mapping, UI composite).
+
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -380,6 +380,14 @@
+ constexpr uint32_t kBytesUboRampa = 4 * 16;  // mezcla, efectos, desplazamiento, inverso (the ramp is a texture)
+ 
+ constexpr uint32_t kBytesVolcado = 48u << 20;  // the frame dump's read-back block (PedirVolcado)
++}  // namespace
++}  // namespace rex::x360
++REXCVAR_DEFINE_INT32(nfsmw_dk_volcado_saltar, 0, "NFSMW",
++                     "deko3d: the frame dump skips the frame's first N copies, so its 48 MB reach the end of a busy frame "
++                     "(tone mapping, the final image). 0 = from the first")
++    .range(0, 4096);
++namespace rex::x360 {
++namespace {
+ 
+ float MedioAFloat(uint16_t h) {
+   const uint32_t signo = uint32_t(h >> 15) << 31, exponente = (h >> 10) & 0x1F, mantisa = h & 0x3FF;
+@@ -2267,6 +2275,7 @@
+       dkMemBlockFlushCpuCache(volcado_bloque_, 0, kBytesVolcado);  // nothing of it stays in the CPU's cache
+       volcando_ = true;
+       volcado_usados_ = 0;
++      volcado_saltadas_ = 0;
+       volcado_.clear();
+       volcado_escena_hecho_ = false;
+       REXLOG_INFO("[deko3d] volcado: el proximo fotograma, cada textura resuelta a la SD");
+@@ -2970,6 +2979,10 @@
+       return;
+   }
+   const uint32_t bytes = imagen.ancho * imagen.alto * bpp;
++  if (volcado_saltadas_ < uint32_t(REXCVAR_GET(nfsmw_dk_volcado_saltar))) {
++    ++volcado_saltadas_;
++    return;
++  }
+   if (volcado_.size() >= 64 || volcado_usados_ + bytes > kBytesVolcado) {
+     return;
+   }
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -312,6 +312,7 @@
+   uint8_t* volcado_cpu_ = nullptr;
+   DkGpuAddr volcado_gpu_ = 0;
+   uint32_t volcado_usados_ = 0, volcados_ = 0;
++  uint32_t volcado_saltadas_ = 0;  // copies skipped so far (nfsmw_dk_volcado_saltar)
+   std::vector<EntradaVolcado> volcado_;
+   Resuelta* ObtenerResuelta(uint32_t base, uint32_t ancho, uint32_t alto, uint32_t formato, bool intercambio_rb,
+                             bool profundidad);
