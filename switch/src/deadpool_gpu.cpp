@@ -215,6 +215,11 @@ REXCVAR_DEFINE_INT32(deadpool_nucleo_audio, -1, "Deadpool",
                      "con mas prioridad que el, lo dejaban sin sitio (anillo 50 % + XMA 30 %)");
 REXCVAR_DEFINE_INT32(deadpool_traza_cada_s, 60, "Deadpool", "Segundos entre trazas de la estructura de un fotograma pesado");
 REXCVAR_DEFINE_INT32(deadpool_trazas_max, 20, "Deadpool", "Trazas de fotograma como mucho");
+REXCVAR_DEFINE_BOOL(deadpool_perfil, false, "Deadpool",
+                    "Performance profile without the rest of telemetry: CPU stack samples of every thread from the start "
+                    "(1 kHz, a few % slower), every frame's time and the GPU profile by draw every 20 s, written to "
+                    "logs/rex/rex_perfil.log and logs/rex/perfil_muestras.bin; read them on the PC with "
+                    "tools/switch/perf_report.py. ZL+ZR+R still turns the stack samples on and off");
 REXCVAR_DEFINE_BOOL(deadpool_perfil_pilas, true, "Deadpool",
                     "Crea logs/rex/perfil_pilas.flag al arrancar: el perfil de CPU muestrea las pilas de cada hilo "
                     "(rex_perfil.log), algo mas lento");
@@ -362,18 +367,20 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       telemetry_ = std::filesystem::exists(rex::filesystem::GetExecutableFolder() / "telemetria.flag", ec);
       const auto folder = rex::filesystem::GetExecutableFolder() / "logs" / "rex";
       const auto stack_flag = folder / "perfil_pilas.flag";
-      if (telemetry_ && REXCVAR_GET(deadpool_perfil_pilas)) {
+      const bool perfil = REXCVAR_GET(deadpool_perfil);
+      if (perfil || (telemetry_ && REXCVAR_GET(deadpool_perfil_pilas))) {
         std::filesystem::create_directories(folder, ec);
         if (FILE* flag = std::fopen(stack_flag.string().c_str(), "a")) std::fclose(flag);
       } else {
         std::filesystem::remove(stack_flag, ec);  // left by an earlier telemetry run
       }
-      REXLOG_INFO("[gpu] telemetry {}", telemetry_ ? "on (telemetria.flag)" : "off");
+      REXLOG_INFO("[gpu] telemetry {}, profile {}", telemetry_ ? "on (telemetria.flag)" : "off",
+                  perfil ? "on (deadpool_perfil)" : "off");
       // The renderer's GPU profile of a frame every 20 s (a barrier and two timestamps around each of ~1300 draws, the
       // first draw of each pass drawn twice) and the frame structure traces (hundreds of log lines to the SD card once
       // a minute) are telemetry too: each was a visible hitch.
       // Unless deadpool.toml asks for it (nfsmw_dk_perfil_gpu_s = N).
-      if (!telemetry_ && !rex::cvar::HasNonDefaultValue("nfsmw_dk_perfil_gpu_s")) {
+      if (!telemetry_ && !perfil && !rex::cvar::HasNonDefaultValue("nfsmw_dk_perfil_gpu_s")) {
         REXCVAR_SET(nfsmw_dk_perfil_gpu_s, 0);
       }
       hide_glow_ = std::filesystem::exists(rex::filesystem::GetExecutableFolder() / "sin_resplandor.flag", ec);

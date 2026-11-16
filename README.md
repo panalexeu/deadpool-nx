@@ -17,7 +17,8 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
 1. Clone and set up the SDKs: rexglue-sdk-nx pinned to `f961303` in `thirdparty/rexglue-sdk-nx` plus
    `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017` DKSH cache entries up to 8 MiB, `0018` interpolators linked
    by register as on the Xbox 360, `0019` queue scratch for spilling shaders, `0020` remapped pixel shaders listed for
-   the PC cache and `0021` `invariant gl_Position` in every vertex shader), upstream rexglue-sdk `v0.10.0` in
+   the PC cache, `0021` `invariant gl_Position` in every vertex shader and `0022` the profiler's raw samples, frame
+   times and CPU per core), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash
@@ -80,6 +81,14 @@ except: the depth prepasses are drawn (Deadpool's screen-space shadows and depth
 waits for the real count and never answers from the previous frame, Singularity's XMA and audio filter changes are off,
 and `nfsmw_dk_sombras_sesgo_pitch` keeps its default (1600): Singularity's 960 gave the 960-wide scene depth prepass the
 shadow-map slope bias, and the base pass, GEQUAL against it, failed on every pixel (the world black).
+
+### Profiling a scene
+
+Set `deadpool_perfil = true` in `deadpool.toml`, play the scene for a minute or more, copy `logs/` from the card and
+run `tools/switch/perf_report.py <logs> -o report.md` with the ELF of the same build (`out/build/switch-native/deadpool`).
+It reports the frame-time distribution, a verdict per 10 s (GPU-bound, CPU-bound on which thread, or waiting), the
+load of each core, the functions that spend each thread's CPU (self and inclusive, game functions as `sub_8XXXXXXX`),
+what threads wait on in the kernel, and what each thread did during the frames over 50 ms.
 
 ### Known issues
 

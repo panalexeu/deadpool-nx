@@ -151,3 +151,11 @@ NFS-MW renderer shortcuts off, blocking (event) waits, compiler thread priority 
   Check which targets the internal pixel shader really exports before clearing aliases.
 - Horizon refuses some thread priorities; guest threads share 0x3B (time-sliced only among themselves).
 - Keep `switch_atajos_depuracion = true` while debugging; tell the user to remove it for normal play.
+
+## Profiling a scene (deadpool-nx)
+
+`deadpool_perfil = true` (toml) writes `logs/rex/perfil_muestras.bin` (threads' CPU per core, every frame's tick
+with the renderer's GPU / GPU-wait / recording totals, 1 kHz stack samples) next to `rex_perfil.log`;
+`tools/switch/perf_report.py <logs>` symbolizes with the same build's ELF and gives the verdict per interval, per-core
+load, per-thread self/inclusive functions, kernel waits and stall-only stacks. The GPU per-frame value lags 1-2 frames
+(finished work): trust it per interval, not per frame. Use the ELF of the exact NRO on the card.

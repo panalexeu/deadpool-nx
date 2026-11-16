@@ -1,0 +1,237 @@
+Subject: [PATCH] switch profiler: raw samples, every frame's time, CPU per core
+
+perfil_muestras.bin (threads with CPU per core, every presented frame with the renderer's GPU,
+GPU-wait and recording totals, the stack samples) for tools/switch/perf_report.py; the renderer now
+feeds the long-frame windows (RexSwitchPerfTiron, never called before).
+
+---
+--- a/src/ui/switch_perf.cpp
++++ b/src/ui/switch_perf.cpp
+@@ -117,6 +117,9 @@
+   u64 last_ticks = 0;
+   bool busy = true;
+   double cpu = 0.0;
++  // Per core (InfoType_ThreadTickCount with the core as sub-id): where the thread actually ran.
++  u64 last_core_ticks[4] = {};
++  double core_cpu[4] = {};
+ };
+ Slot g_slots[kMaxThreads];
+ 
+@@ -140,6 +143,22 @@
+ };
+ VentanaTiron g_tirones[kMaxTirones];
+ std::atomic<u32> g_num_tirones{0};
++
++/*
++ * Every presented frame (RexSwitchPerfFotograma, from the renderer's swap): when, and the renderer's running
++ * totals then (GPU time of the finished work, time its ring thread waited for the GPU, time it spent recording).
++ * Written with the samples to perfil_muestras.bin; tools/switch/perf_report.py turns them into frame times and
++ * the bottleneck of each frame.
++ */
++struct Fotograma {
++  u64 tick;
++  u64 gpu_ns;
++  u64 espera_gpu_ns;
++  u64 grabando_ns;
++};
++constexpr size_t kMaxFotogramas = 4096;
++Fotograma g_fotogramas[kMaxFotogramas];
++std::atomic<u32> g_num_fotogramas{0};
+ Sample g_samples[kMaxSamples];
+ size_t g_sample_count = 0;
+ 
+@@ -349,6 +368,67 @@
+   return out;
+ }
+ 
++/*
++ * The interval in raw form, appended to <logs>/rex/perfil_muestras.bin for tools/switch/perf_report.py (which
++ * names the addresses from the ELF and finds the bottleneck). Little-endian, one block per report:
++ *   "RXP1", u32 version (1), u64 tick at the end of the interval, u64 interval ticks, u64 tick frequency,
++ *   u64 image base, u32 threads, then per thread: u16 slot, u64 thread id, char name[32], f32 CPU %,
++ *   f32 CPU % on cores 0-3, i32 priority, i32 preferred core, u64 core mask;
++ *   u32 frames, then per frame: u64 tick, u64 GPU ns, u64 GPU-wait ns, u64 recording ns (running totals);
++ *   u32 samples, then per sample: u64 tick, u16 slot, u64 pc, u64 lr, u64 frames[10].
++ * Without stack sampling the block has no samples (threads and frames only: a few KB every 10 s).
++ */
++void EscribirCrudo(u64 elapsed_ticks, u64 tick_freq, const std::vector<size_t>& order,
++                   const std::vector<Sample>& samples) {
++  const u32 nf = std::min<u32>(g_num_fotogramas.exchange(0), kMaxFotogramas);
++  FILE* f = std::fopen((std::string(RexSwitchLogDir()) + "perfil_muestras.bin").c_str(), "ab");
++  if (!f) {
++    return;
++  }
++  const auto w = [f](const void* p, size_t n) { std::fwrite(p, 1, n, f); };
++  const auto w64 = [&w](u64 v) { w(&v, 8); };
++  const auto w32 = [&w](u32 v) { w(&v, 4); };
++  w("RXP1", 4);
++  w32(1);
++  w64(armGetSystemTick());
++  w64(elapsed_ticks);
++  w64(tick_freq);
++  w64(g_base);
++  w32(u32(order.size()));
++  for (size_t i : order) {
++    const Slot& s = g_slots[i];
++    u64 tid = 0;
++    s32 prioridad = -1, preferido = -1;
++    u64 mascara = 0;
++    svcGetThreadId(&tid, s.handle.load());
++    svcGetThreadPriority(&prioridad, s.handle.load());
++    svcGetThreadCoreMask(&preferido, &mascara, s.handle.load());
++    const u16 slot = u16(i);
++    w(&slot, 2);
++    w64(tid);
++    char nombre[32] = {};
++    std::memcpy(nombre, s.name, sizeof(nombre) - 1);
++    w(nombre, 32);
++    const float cpu[5] = {float(s.cpu), float(s.core_cpu[0]), float(s.core_cpu[1]), float(s.core_cpu[2]),
++                          float(s.core_cpu[3])};
++    w(cpu, sizeof(cpu));
++    w(&prioridad, 4);
++    w(&preferido, 4);
++    w64(mascara);
++  }
++  w32(nf);
++  w(g_fotogramas, sizeof(Fotograma) * nf);
++  w32(u32(samples.size()));
++  for (const Sample& m : samples) {
++    w64(m.tick);
++    w(&m.slot, 2);
++    w64(m.pc);
++    w64(m.lr);
++    w(m.frames, sizeof(m.frames));
++  }
++  std::fclose(f);
++}
++
+ void Report(u64 elapsed_ticks, u64 tick_freq, u64 counters_last[kCounterCount],
+             const char* mode) {
+   const double seconds = double(elapsed_ticks) / double(tick_freq);
+@@ -371,15 +451,28 @@
+     if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, h, UINT64_MAX))) {
+       continue;
+     }
++    u64 core_ticks[4] = {};
++    for (unsigned c = 0; c < 4; ++c) {
++      if (R_FAILED(svcGetInfo(&core_ticks[c], InfoType_ThreadTickCount, h, c))) {
++        core_ticks[c] = 0;
++      }
++    }
+     if (s.seen != h) {  // new thread: no interval yet
+       s.seen = h;
+       s.last_ticks = ticks;
++      std::memcpy(s.last_core_ticks, core_ticks, sizeof(core_ticks));
+       s.busy = true;
+       s.cpu = 0.0;
+       continue;
+     }
+     s.cpu = double(ticks - s.last_ticks) * 100.0 / double(elapsed_ticks);
+     s.last_ticks = ticks;
++    for (unsigned c = 0; c < 4; ++c) {
++      s.core_cpu[c] = core_ticks[c] >= s.last_core_ticks[c]
++                          ? double(core_ticks[c] - s.last_core_ticks[c]) * 100.0 / double(elapsed_ticks)
++                          : 0.0;
++      s.last_core_ticks[c] = core_ticks[c];
++    }
+     /*
+      * All threads are sampled, including those that use no CPU. In a hang caused by
+      * a wait, the thread that matters is exactly that one: the stopped one.
+@@ -569,6 +662,7 @@
+ 
+   std::vector<Sample> samples(g_samples, g_samples + g_sample_count);
+   g_sample_count = 0;
++  EscribirCrudo(elapsed_ticks, tick_freq, order, samples);
+   std::sort(samples.begin(), samples.end(),
+             [](const Sample& a, const Sample& b) { return a.slot < b.slot; });
+ 
+@@ -654,10 +748,11 @@
+     svcGetThreadPriority(&prioridad, s.handle.load());
+     svcGetThreadCoreMask(&preferido, &mascara, s.handle.load());
+     std::fprintf(f,
+-                 "\n-- hilo %" PRIu64 " \"%s\": CPU %.1f%% | prioridad 0x%X, nucleo preferido %d, "
+-                 "mascara 0x%llX\n",
+-                 tid, s.name[0] ? s.name : "?", s.cpu, static_cast<unsigned>(prioridad),
+-                 static_cast<int>(preferido), static_cast<unsigned long long>(mascara));
++                 "\n-- hilo %" PRIu64 " \"%s\": CPU %.1f%% (nucleos 0-3: %.0f/%.0f/%.0f/%.0f%%) | prioridad 0x%X, "
++                 "nucleo preferido %d, mascara 0x%llX\n",
++                 tid, s.name[0] ? s.name : "?", s.cpu, s.core_cpu[0], s.core_cpu[1], s.core_cpu[2], s.core_cpu[3],
++                 static_cast<unsigned>(prioridad), static_cast<int>(preferido),
++                 static_cast<unsigned long long>(mascara));
+ 
+     auto lo = std::lower_bound(samples.begin(), samples.end(), i,
+                                [](const Sample& a, size_t v) { return a.slot < v; });
+@@ -840,6 +935,10 @@
+     std::fprintf(f, "Muestreo de pilas: %s\n", sample_stacks ? "activo (1 ms)" : "desactivado");
+     std::fclose(f);
+   }
++  // The raw blocks start over with each session, like rex_perfil.log.
++  if (FILE* f = std::fopen((std::string(RexSwitchLogDir()) + "perfil_muestras.bin").c_str(), "wb")) {
++    std::fclose(f);
++  }
+ 
+   // The console overlays read from SaltyNX's shared memory. That is already running from second
+   // zero (see the warm-up loop above); only the normal loop continues here.
+@@ -1051,6 +1150,14 @@
+   }
+ }
+ 
++// A presented frame: its tick and the renderer's running totals (see Fotograma).
++void RexSwitchPerfFotograma(u64 tick, u64 gpu_ns, u64 espera_gpu_ns, u64 grabando_ns) {
++  const u32 i = g_num_fotogramas.fetch_add(1);
++  if (i < kMaxFotogramas) {
++    g_fotogramas[i] = {tick, gpu_ns, espera_gpu_ns, grabando_ns};
++  }
++}
++
+ void RexSwitchPerfResolution(unsigned ancho, unsigned alto) {
+   g_resolucion.store(((ancho & 0xFFFF) << 16) | (alto & 0xFFFF), std::memory_order_relaxed);
+ }
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -24,6 +24,8 @@
+ #include <fstream>
+ #include <thread>
+ 
++#include <switch.h>  // armGetSystemTick (the profiler's frame record)
++
+ #include <rex/ui/deko3d/compilador.h>
+ #include <rex/ui/deko3d/presentador.h>
+ #include <rex/x360/deko/render.h>
+@@ -129,6 +131,9 @@
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
+ extern "C" void RexSwitchPerfCount(unsigned id);
++// The profiler's frame record and long-frame windows (switch_perf.cpp), in armGetSystemTick ticks.
++extern "C" void RexSwitchPerfFotograma(uint64_t tick, uint64_t gpu_ns, uint64_t espera_gpu_ns, uint64_t grabando_ns);
++extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
+ 
+ // The 30 FPS guard (nfsmw_guardia_30) lives in nfsmw_recorte_sombras.cpp.
+ namespace rex::x360 {
+@@ -2269,6 +2274,16 @@
+   }
+   RexSwitchPerfCount(0);  // the profiler's "juego N fps"
+   const uint64_t ahora = deko::AhoraNs();
++  {
++    // Every frame for tools/switch/perf_report.py; a frame over 45 ms also as a hitch window, so the stack
++    // samples taken inside it are reported apart ("durante los tirones" in rex_perfil.log).
++    const uint64_t tick = armGetSystemTick();
++    RexSwitchPerfFotograma(tick, gpu_ns_, nucleo_.NsEsperandoValla(), ns_grabando_);
++    if (ultimo_swap_tick_ && tick - ultimo_swap_tick_ > armGetSystemTickFreq() * 45 / 1000) {
++      RexSwitchPerfTiron(ultimo_swap_tick_, tick);
++    }
++    ultimo_swap_tick_ = tick;
++  }
+   if (ultimo_swap_ns_) {
+     const double ms = double(ahora - ultimo_swap_ns_) / 1e6;
+     const uint32_t cubeta = ms < 15.0    ? 0
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -839,6 +839,7 @@
+   std::array<uint64_t, kCubetasSwap> cubetas_swap_{};
+   double peor_swap_ms_ = 0;
+   uint64_t ultimo_swap_ns_ = 0;
++  uint64_t ultimo_swap_tick_ = 0;  // armGetSystemTick at the last swap (the profiler's frame record)
+   uint64_t ns_grabando_ = 0;
+   std::unordered_map<uint32_t, uint64_t> causas_;
+   std::unordered_map<uint32_t, bool> avisados_;

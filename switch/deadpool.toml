@@ -41,3 +41,9 @@ deadpool_dof_arma = true
 audio_xma_fin_tras_drenar = false
 # The game's XAudio2 state-variable filters as native code (switch/src/deadpool_perf_hooks.cpp): false = the game's own.
 deadpool_audio_filtro_nativo = false
+
+# Performance profile (off for normal play, a few % slower): CPU stack samples of every thread at 1 kHz, every frame's
+# time, CPU per core and the GPU profile by draw, to logs/rex/. On the PC: tools/switch/perf_report.py <logs folder>
+# gives the bottleneck per 10 s (GPU-bound / CPU-bound on which thread), the functions that spend each thread's CPU,
+# the cores' load and what each thread did during the stalls. ZL+ZR+R turns the stack samples on and off in game.
+deadpool_perfil = false
