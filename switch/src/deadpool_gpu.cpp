@@ -43,6 +43,7 @@ void deadpool_log_main_thread();  // src/deadpool_guards.cpp
 #include <cstring>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <rex/graphics/registers.h>
@@ -619,7 +620,13 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     thread->SetActiveCpu(uint8_t(cpu));
     uint64_t args[] = {source, callback_data_.load(std::memory_order_acquire)};
+    const auto start = Clock::now();
     dispatcher_->ExecuteInterrupt(thread->thread_state(), callback, args, 2);
+    // Stall hunt: the game's interrupt callback (vblank: source 0, a ring PM4_INTERRUPT: 1) taking 10 ms or more.
+    if (const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        ms >= 10.0 && long_interrupts_logged_.fetch_add(1, std::memory_order_relaxed) < 200) {
+      REXLOG_INFO("[espera] interrupt callback (source {}) took {:.0f} ms", source, ms);
+    }
   }
 
   int VblankLoop() {
@@ -681,7 +688,22 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
       }
       const uint32_t written = write_pointer_.load(std::memory_order_acquire) & (words - 1);
       if (written == read) {
+        if (!idle_since_) {
+          idle_since_ = std::chrono::steady_clock::now();
+          idle_vblanks_ = vblanks_.load(std::memory_order_relaxed);
+        }
         continue;
+      }
+      // Stall hunt: the ring had nothing to read (the game gave it no packets) for 40 ms or more.
+      if (idle_since_) {
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *idle_since_).count();
+        if (ms >= 40.0 && long_idle_logged_ < 400) {
+          ++long_idle_logged_;
+          REXLOG_INFO("[espera] ring idle {:.0f} ms (no packets from the game), {} vblanks meanwhile, read {:08X}",
+                      ms, vblanks_.load(std::memory_order_relaxed) - idle_vblanks_, read);
+        }
+        idle_since_.reset();
       }
       ring_activity_ = std::chrono::steady_clock::now();
       Reader reader;
@@ -1012,6 +1034,8 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
         const auto limit = start + kWaitRegMemMax;
         const auto yield_until = start + std::chrono::milliseconds(1);
         bool waited = false;
+        const uint32_t first_value = (info & 0x10) ? ReadMemory(poll) : Register(poll);
+        const uint64_t vblanks_start = vblanks_.load(std::memory_order_relaxed);
         for (;;) {
           if (!(info & 0x10) && poll == rex::graphics::XE_GPU_REG_COHER_STATUS_HOST &&
               (Register(poll) & UINT32_C(0x80000000))) {
@@ -1036,6 +1060,18 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
           } else {
             rex::thread::Sleep(std::chrono::microseconds(100));
           }
+        }
+        // Stall hunt: a ring wait of 40 ms or more (the game's frame is paced by one of these each frame, ~20-30 ms):
+        // what it polled, the value before and after, how many vblank interrupts ran meanwhile.
+        if (const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+            ms >= 40.0 && long_reg_mem_logged_ < 400) {
+          ++long_reg_mem_logged_;
+          const uint32_t last = (info & 0x10) ? ReadMemory(poll) : Register(poll);
+          REXLOG_INFO("[espera] WAIT_REG_MEM {:.0f} ms: {} {:08X} {} {:08X} (mask {:08X}), value {:08X} -> {:08X}, "
+                      "{} vblanks, ring write pointer {:08X}",
+                      ms, (info & 0x10) ? "memory" : "register", poll, "func" + std::to_string(info & 7), reference,
+                      mask, first_value, last, vblanks_.load(std::memory_order_relaxed) - vblanks_start,
+                      write_pointer_.load(std::memory_order_relaxed));
         }
         if (waited) {
           ++reg_mem_waits_;
@@ -2799,6 +2835,11 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::atomic<uint32_t> read_pointer_writeback_{0};
   std::atomic<uint32_t> counter_{0};  // vblanks + swaps, for EVENT_WRITE_SHD
   std::atomic<uint64_t> vblanks_{0};
+  uint32_t long_reg_mem_logged_ = 0;
+  uint32_t long_idle_logged_ = 0;
+  uint64_t idle_vblanks_ = 0;
+  std::optional<std::chrono::steady_clock::time_point> idle_since_;
+  std::atomic<uint32_t> long_interrupts_logged_{0};
   std::mutex ring_mutex_;
   std::condition_variable ring_cv_;
   std::atomic<bool> ring_dormido_{false};  // the ring thread is (about to be) waiting on ring_cv_

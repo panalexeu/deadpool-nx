@@ -32,8 +32,10 @@
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
-REXCVAR_DEFINE_BOOL(deadpool_volcar_desconocidos, true, "Deadpool",
-                    "Escribir el microcodigo de cada shader que no se identifica en shaders_unknown/ (una vez cada uno, hasta 2000): asi se ve cuantos faltan en todo el juego sin pedir nada");
+REXCVAR_DEFINE_BOOL(deadpool_volcar_desconocidos, false, "Deadpool",
+                    "Write the microcode of each shader that is not identified to shaders_unknown/ (once each, up to "
+                    "2000), to see how many are missing. Off by default: each one created a file on the SD from the GPU "
+                    "ring thread in the middle of a frame (10-200 ms on the console), a stall source");
 
 REXCVAR_DEFINE_BOOL(deadpool_shaders_por_demanda, true, "Deadpool",
                     "La biblioteca de shaders se carga como indice (solo los contenedores) y el SPIR-V de cada shader "
