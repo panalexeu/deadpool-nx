@@ -1,0 +1,75 @@
+Subject: [PATCH] switch: guest threads on the core of the Xbox hardware thread the game chose
+
+---
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -197,6 +197,20 @@
+   }
+ }
+ 
++#if REX_PLATFORM_SWITCH
++// deadpool-nx: the game's own thread placement on the Switch. An Xbox 360 game puts each thread on a hardware thread
++// (0-5, two per core of its 3 cores) and Unreal Engine 3 spreads main, render and worker threads over them on purpose;
++// with fewer than 6 host cores SetActiveCpu ignored it and every guest thread could run on any of the 3 cores, so the
++// busy ones met on the same core while another idled (perf_report.py: 3 cores ~87 % busy in dense scenes, fps dips).
++// Hardware thread n goes to Switch core n / 2 (the game has cores 0-2), only for a placement the game chose (a
++// processor in the creation flags or KeSetAffinityThread), never for the ones GetFakeCpuNumber picks in turn, and
++// never for host threads that run guest interrupt callbacks. Each placement is logged once ("[nucleos]").
++REXCVAR_DEFINE_BOOL(switch_nucleos_del_juego, true, "Switch",
++                    "Guest threads placed on the Switch core matching the Xbox 360 hardware thread the game chose "
++                    "(hardware thread / 2); false = any core, as before")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++#endif
++
+ static uint8_t next_cpu = 0;
+ static uint8_t GetFakeCpuNumber(uint8_t proc_mask) {
+   // NOTE: proc_mask is logical processors, not physical processors or cores.
+@@ -529,6 +543,9 @@
+   // Assign the newly created thread to the logical processor, and also set up
+   // the current CPU in KPCR and KTHREAD.
+   SetActiveCpu(cpu_index);
++  if (static_cast<uint8_t>(creation_params_.creation_flags >> 24) & 0x3F) {
++    NucleoDelJuego(cpu_index, "al crearse");
++  }
+ 
+   // TODO(tomc): do we need thread notifications (related to processor thread management)?
+ 
+@@ -911,7 +928,26 @@
+ }
+ 
+ void XThread::SetAffinity(uint32_t affinity) {
+-  SetActiveCpu(GetFakeCpuNumber(affinity));
++  const uint8_t cpu = GetFakeCpuNumber(affinity);
++  SetActiveCpu(cpu);
++  if (affinity & 0x3F) {
++    NucleoDelJuego(cpu, "KeSetAffinityThread");
++  }
++}
++
++void XThread::NucleoDelJuego(uint8_t cpu_index, const char* origen) {
++#if REX_PLATFORM_SWITCH
++  if (!REXCVAR_GET(switch_nucleos_del_juego) || !is_guest_thread() || !thread_ || cpu_index >= 6) {
++    return;
++  }
++  const uint32_t nucleo = cpu_index / 2;
++  thread_->set_affinity_mask(uint64_t(1) << nucleo);
++  REXSYS_INFO("[nucleos] {} ({:08X}): hilo hardware {} de la Xbox ({}) -> nucleo {} de la Switch", thread_name_,
++              guest_object(), cpu_index, origen, nucleo);
++#else
++  (void)cpu_index;
++  (void)origen;
++#endif
+ }
+ 
+ uint8_t XThread::active_cpu() const {
+--- a/include/rex/system/xthread.h
++++ b/include/rex/system/xthread.h
+@@ -368,6 +368,8 @@
+   void SetAffinity(uint32_t affinity);
+   uint8_t active_cpu() const;
+   void SetActiveCpu(uint8_t cpu_index);
++  // Switch: the core of the Xbox hardware thread the game chose (switch_nucleos_del_juego).
++  void NucleoDelJuego(uint8_t cpu_index, const char* origen);
+ 
+   bool GetTLSValue(uint32_t slot, uint32_t* value_out);
+   bool SetTLSValue(uint32_t slot, uint32_t value);
