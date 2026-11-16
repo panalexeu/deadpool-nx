@@ -24,12 +24,19 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <span>
+#include <unordered_set>
+#include <mutex>
+#include <filesystem>
 #include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/memory/utils.h>
 #include <rex/system/lzx.h>
+#include <rex/filesystem.h>
+#include "deadpool_shaders.h"
+#include <xxhash.h>
 
 #if defined(__SWITCH__)
 #include <switch.h>
