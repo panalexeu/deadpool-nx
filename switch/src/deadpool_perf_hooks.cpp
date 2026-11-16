@@ -24,6 +24,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -102,6 +103,136 @@ REX_HOOK_RAW(sub_82F88DF0) {
     return;
   }
   if (const uint32_t n = ctx.r5.u32) std::memset(base + ctx.r3.u32, int(ctx.r4.u32 & 0xFF), n);
+}
+
+// The Xbox SDK's own memory routines and Direct3D's shader-constant copy, as native code (perf_report.py, dense
+// scenes: ~1-2 % of the main, worker and render threads). Each is exact by construction (a copy, a fill); the steps
+// they read from game data (1 byte per step in the copy's tail, 16 bytes per step in the fill) are checked first, and
+// anything unexpected (another step value, overlapping copy ranges) runs the original.
+//
+//   sub_82D71990  copy: r3 destination, r4 source, r5 bytes; answers r3 (8/4-byte and vector paths, a byte tail
+//                 stepping by the word at 0x8359B3E0, dcbt prefetches).
+//   sub_82D71E58  fill: r3 destination, r4 byte, r5 bytes (vector stores stepping by the word at 0x8359B3E4, dcbzl
+//                 for zero).
+//   sub_82D9C6A8  Direct3D's constant upload: r6 16-byte constants from r5 (any alignment) to r3 + (r4 + 120) * 16,
+//                 then the 64-bit word at r3 |= r7.
+//
+// deadpool_cpu_nativo_comprobar: the first 2000 calls of each also run the original on the same memory and compare
+// the bytes (the original's result is kept); "[nativo]" lines report the count and any difference.
+REXCVAR_DEFINE_BOOL(deadpool_cpu_nativo_xdk, true, "Deadpool",
+                    "The Xbox SDK's memory copy and fill (sub_82D71990, sub_82D71E58) and Direct3D's shader-constant "
+                    "copy (sub_82D9C6A8) as native code");
+REXCVAR_DEFINE_BOOL(deadpool_cpu_nativo_comprobar, false, "Deadpool",
+                    "Check the native versions above against the originals on their first 2000 calls each (slower "
+                    "while it lasts; '[nativo]' log lines)");
+
+namespace {
+uint32_t U32Be(const uint8_t* base, uint32_t a) { return rex::memory::load_and_swap<uint32_t>(base + a); }
+
+// Once per session: the step words the copy and the fill read, so the log says whether the native versions run.
+void InformarPasos(const uint8_t* base) {
+  static std::atomic<bool> hecho{false};
+  if (!hecho.exchange(true)) {
+    REXLOG_INFO("[nativo] SDK copy/fill steps in game data: {} and {} (native when 1 and 16)", U32Be(base, 0x8359B3E0),
+                U32Be(base, 0x8359B3E4));
+  }
+}
+
+struct Comprobacion {
+  const char* nombre;
+  std::atomic<uint32_t> llamadas{0}, diferencias{0};
+  std::atomic<bool> informado{false};
+};
+Comprobacion g_comp_copia{"copia (sub_82D71990)"}, g_comp_relleno{"relleno (sub_82D71E58)"},
+    g_comp_constantes{"constantes D3D (sub_82D9C6A8)"};
+
+// Runs `original` and `nativo` on the same `bytes` at `destino` and compares; the original's bytes are what remains.
+template <class O, class N>
+void Comprobar(Comprobacion& c, uint8_t* destino, uint32_t bytes, O original, N nativo) {
+  const uint32_t n = c.llamadas.fetch_add(1, std::memory_order_relaxed);
+  if (n >= 2000) {
+    nativo();
+    if (!c.informado.exchange(true)) {
+      REXLOG_INFO("[nativo] {}: 2000 calls checked against the original, {} differed", c.nombre,
+                  c.diferencias.load());
+    }
+    return;
+  }
+  std::vector<uint8_t> antes(destino, destino + bytes);
+  original();
+  std::vector<uint8_t> ref(destino, destino + bytes);
+  std::memcpy(destino, antes.data(), bytes);
+  nativo();
+  if (std::memcmp(destino, ref.data(), bytes) != 0) {
+    if (c.diferencias.fetch_add(1) < 8) REXLOG_WARN("[nativo] {}: DIFFERS on a call of {} bytes", c.nombre, bytes);
+    std::memcpy(destino, ref.data(), bytes);
+  }
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_82D71990);
+REX_HOOK_RAW(sub_82D71990) {
+  const uint32_t d = ctx.r3.u32, s = ctx.r4.u32, n = ctx.r5.u32;
+  InformarPasos(base);
+  if (!REXCVAR_GET(deadpool_cpu_nativo_xdk) || U32Be(base, 0x8359B3E0) != 1 || (n && d < s + n && s < d + n)) {
+    __imp__sub_82D71990(ctx, base);
+    return;
+  }
+  auto nativo = [&] {
+    if (n) std::memcpy(base + d, base + s, n);
+    ctx.r3.u64 = d;
+  };
+  if (REXCVAR_GET(deadpool_cpu_nativo_comprobar) && n) {
+    Comprobar(g_comp_copia, base + d, n, [&] { __imp__sub_82D71990(ctx, base); }, nativo);
+    ctx.r3.u64 = d;
+  } else {
+    nativo();
+  }
+}
+
+REX_EXTERN(__imp__sub_82D71E58);
+REX_HOOK_RAW(sub_82D71E58) {
+  const uint32_t d = ctx.r3.u32, n = ctx.r5.u32;
+  const int byte = int(ctx.r4.u32 & 0xFF);
+  if (!REXCVAR_GET(deadpool_cpu_nativo_xdk) || U32Be(base, 0x8359B3E4) != 16) {
+    __imp__sub_82D71E58(ctx, base);
+    return;
+  }
+  auto nativo = [&] {
+    if (n) std::memset(base + d, byte, n);
+  };
+  if (REXCVAR_GET(deadpool_cpu_nativo_comprobar) && n) {
+    const uint64_t r3 = ctx.r3.u64;
+    Comprobar(g_comp_relleno, base + d, n, [&] { __imp__sub_82D71E58(ctx, base); }, nativo);
+    ctx.r3.u64 = r3;
+  } else {
+    nativo();
+  }
+}
+
+REX_EXTERN(__imp__sub_82D9C6A8);
+REX_HOOK_RAW(sub_82D9C6A8) {
+  const uint32_t dispositivo = ctx.r3.u32, inicio = ctx.r4.u32, fuente = ctx.r5.u32, cuantos = ctx.r6.u32;
+  const uint32_t destino = dispositivo + ((inicio + 120) << 4);
+  const uint32_t bytes = cuantos * 16;
+  if (!REXCVAR_GET(deadpool_cpu_nativo_xdk) || (fuente < destino + bytes && destino < fuente + bytes)) {
+    __imp__sub_82D9C6A8(ctx, base);
+    return;
+  }
+  const uint64_t marca = ctx.r7.u64;
+  auto nativo = [&] {
+    if (bytes) std::memcpy(base + destino, base + fuente, bytes);
+    const uint64_t m = rex::memory::load_and_swap<uint64_t>(base + dispositivo) | marca;
+    rex::memory::store_and_swap<uint64_t>(base + dispositivo, m);
+  };
+  if (REXCVAR_GET(deadpool_cpu_nativo_comprobar) && destino == dispositivo + ((inicio + 120) << 4) &&
+      destino >= dispositivo + 8) {
+    // Two regions change: the 8-byte mask word and the constants; checked as one span from the word.
+    const uint32_t tramo = destino + bytes - dispositivo;
+    Comprobar(g_comp_constantes, base + dispositivo, tramo, [&] { __imp__sub_82D9C6A8(ctx, base); }, nativo);
+  } else {
+    nativo();
+  }
 }
 
 // sub_8312AF68  a state-variable filter of the game's audio mixer (XAudio2), Singularity's sub_828EDF78 there ~20% of
