@@ -32,11 +32,6 @@
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
-REXCVAR_DEFINE_BOOL(deadpool_volcar_desconocidos, false, "Deadpool",
-                    "Write the microcode of each shader that is not identified to shaders_unknown/ (once each, up to "
-                    "2000), to see how many are missing. Off by default: each one created a file on the SD from the GPU "
-                    "ring thread in the middle of a frame (10-200 ms on the console), a stall source");
-
 REXCVAR_DEFINE_BOOL(deadpool_shaders_por_demanda, true, "Deadpool",
                     "La biblioteca de shaders se carga como indice (solo los contenedores) y el SPIR-V de cada shader "
                     "se lee de la tarjeta la primera vez que se usa: con todos los shaders del juego (~470 MB) no cabe "
@@ -257,27 +252,6 @@ void TiposDesdeSpirv(std::span<const uint32_t> spirv, std::vector<SamplerShader>
       if (d->second == 3) sampler.tipo = 14;       // Dim Cube: SamplerCube
       else if (d->second == 2) sampler.tipo = 13;  // Dim 3D: Sampler3D
     }
-  }
-}
-
-// Each distinct microcode no step identifies, as the ring loaded it (big-endian words, D3D's patches included), to
-// shaders_unknown/{vs,ps}_<fingerprint>.bin beside the NRO: compared offline with the game's containers, it tells why
-// it was not found (not in the library, or patched in a way the steps do not expect). deadpool_volcar_desconocidos.
-void VolcarDesconocido(bool vertices, uint64_t huella, std::span<const uint32_t> microcodigo) {
-  static uint32_t escritos = 0;
-  if (!REXCVAR_GET(deadpool_volcar_desconocidos) || escritos >= 2000) return;
-  static const std::filesystem::path carpeta = rex::filesystem::GetExecutableFolder() / "shaders_unknown";
-  std::error_code ec;
-  if (escritos == 0) std::filesystem::create_directories(carpeta, ec);
-  char nombre[48];
-  std::snprintf(nombre, sizeof(nombre), "%s_%016llx.bin", vertices ? "vs" : "ps", static_cast<unsigned long long>(huella));
-  if (FILE* f = std::fopen((carpeta / nombre).string().c_str(), "wb")) {
-    for (uint32_t w : microcodigo) {
-      const uint32_t be = __builtin_bswap32(w);
-      std::fwrite(&be, 4, 1, f);
-    }
-    std::fclose(f);
-    ++escritos;
   }
 }
 
@@ -619,9 +593,6 @@ const EntradaShader* Biblioteca::IdentificarEntrada(bool vertices, uint32_t fisi
                         fisica, candidato->numero, mejor.first, mejor.second, segundo.first, segundo.second);
           }
           d.aprendidas[huella] = elegido;  // later loads of it: step 2
-          // deadpool-nx: the real microcode of each one taken by similarity, as shaders_unknown/ holds the unknown
-          // ones: compared with the chosen entry offline, it shows what D3D changed (or that it is another shader).
-          VolcarDesconocido(true, huella ^ (uint64_t(candidato->numero) << 40), microcodigo);
         }
       }
     }
@@ -630,7 +601,6 @@ const EntradaShader* Biblioteca::IdentificarEntrada(bool vertices, uint32_t fisi
       REXLOG_WARN("[shaders] unknown {} load: {} words at {:08X}", vertices ? "VS" : "PS", microcodigo.size(),
                   fisica);
     }
-    if (!elegido) VolcarDesconocido(vertices, huella, microcodigo);
   }
   ++(parecido ? d.estadisticas.por_parecido
               : elegido ? d.estadisticas.por_microcodigo : d.estadisticas.desconocidas);
