@@ -1,0 +1,128 @@
+Subject: [PATCH] deko3d: the ring thread's per-frame maps take their nodes from a pool
+
+---
+--- a/include/rex/x360/deko/geometria.h
++++ b/include/rex/x360/deko/geometria.h
+@@ -44,6 +44,8 @@
+ #include <utility>
+ #include <vector>
+ 
++#include <rex/x360/deko/pool_nodos.h>
++
+ // Nucleo lives in the universal SDK (rex::deko3d). Forward-declare it there and import the SDK's deko types into
+ // NFS's deko namespace, so this header's unqualified Nucleo is the SDK's, not a phantom local one.
+ namespace rex::deko3d { class Nucleo; }
+@@ -168,7 +170,10 @@
+     uint64_t trabajo;
+   };
+   std::deque<Pendiente> pendientes_;
+-  std::unordered_map<uint64_t, Entrada> tabla_;
++  // Its nodes from a pool (PoolNodos): thousands of one-off ranges come and go each frame.
++  std::unordered_map<uint64_t, Entrada, std::hash<uint64_t>, std::equal_to<uint64_t>,
++                     PoolNodos<std::pair<const uint64_t, Entrada>>>
++      tabla_;
+   struct Rapida {
+     uint64_t clave = 0;
+     Entrada* entrada = nullptr;
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -573,7 +573,9 @@
+   uint32_t oclusion_siguiente_ = 0;
+   uint64_t oclusion_directas_ = 0;      // results read before their work finished (nfsmw_dk_oclusion_directa)
+   uint64_t oclusion_envio_parcial_ = ~0ull;  // dibujados_ at the last partial submit for a waiting game
+-  std::unordered_map<uint32_t, ConsultaDk> oclusion_abiertas_;     // by base: started, not ended
++  std::unordered_map<uint32_t, ConsultaDk, std::hash<uint32_t>, std::equal_to<uint32_t>,
++                     deko::PoolNodos<std::pair<const uint32_t, ConsultaDk>>>
++      oclusion_abiertas_;  // by base: started, not ended (one node per query: from a pool)
+   std::deque<ConsultaDk> oclusion_pendientes_;                     // ended, the GPU has not finished them
+   std::unordered_map<uint64_t, uint64_t> oclusion_listas_;         // by ticket: counted, not asked for yet
+   uint64_t oclusion_ticket_ = 0;
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -1226,7 +1226,7 @@
+   }
+   if (!cambia) return 0;
+   const uint32_t id = uint32_t(XXH3_64bits(origen.data(), origen.size())) & kMascaraIdRemapeo;
+-  const auto [it, nuevo] = remapeos_.emplace(id, origen);
++  const auto [it, nuevo] = remapeos_.try_emplace(id, origen);  // no node built when it is known
+   if (!nuevo && it->second != origen) {
+     REXLOG_WARN("[deko3d] remapeo de interpoladores: colision del identificador {:08X}; se dibuja sin remapear", id);
+     return 0;
+--- a/include/rex/x360/deko/pool_nodos.h
++++ b/include/rex/x360/deko/pool_nodos.h
+@@ -0,0 +1,75 @@
++#pragma once
++// deadpool-nx: a node pool for the std::unordered_maps the GPU ring thread fills and empties every frame (the geometry
++// store's table, the open occlusion queries). With the default allocator each new key was a malloc and each erase a
++// free: ~7 % of the ring thread in dense scenes (perf_report.py). Here a node comes from a free list, refilled 256 at a
++// time; nodes go back to the list, never to the system (the pool keeps its peak). Anything but a single object (the
++// bucket arrays) goes to operator new as usual. The maps keep their node-based guarantees (entries never move).
++//
++// One pool per node type, without a lock: only for maps used by a single thread.
++
++#include <cstddef>
++#include <new>
++
++namespace rex::deko3d {
++
++template <class T>
++struct PoolNodos {
++  using value_type = T;
++
++  PoolNodos() noexcept = default;
++  template <class U>
++  PoolNodos(const PoolNodos<U>&) noexcept {}
++
++  T* allocate(std::size_t n) {
++    if (n != 1) {
++      return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t(alignof(T))));
++    }
++    Estado& e = estado();
++    if (!e.libre) {
++      Rellenar(e);
++    }
++    Hueco* h = e.libre;
++    e.libre = h->siguiente;
++    return reinterpret_cast<T*>(h);
++  }
++
++  void deallocate(T* p, std::size_t n) noexcept {
++    if (n != 1) {
++      ::operator delete(p, std::align_val_t(alignof(T)));
++      return;
++    }
++    Estado& e = estado();
++    Hueco* h = reinterpret_cast<Hueco*>(p);
++    h->siguiente = e.libre;
++    e.libre = h;
++  }
++
++  friend bool operator==(const PoolNodos&, const PoolNodos&) noexcept { return true; }
++  friend bool operator!=(const PoolNodos&, const PoolNodos&) noexcept { return false; }
++
++ private:
++  struct Hueco {
++    Hueco* siguiente;
++  };
++  static constexpr std::size_t kAlineacion = alignof(T) > alignof(Hueco) ? alignof(T) : alignof(Hueco);
++  static constexpr std::size_t kTam =
++      ((sizeof(T) > sizeof(Hueco) ? sizeof(T) : sizeof(Hueco)) + kAlineacion - 1) / kAlineacion * kAlineacion;
++  static constexpr std::size_t kPorBloque = 256;
++  struct Estado {
++    Hueco* libre = nullptr;
++  };
++  static Estado& estado() {
++    static Estado e;
++    return e;
++  }
++  static void Rellenar(Estado& e) {
++    auto* bloque = static_cast<unsigned char*>(::operator new(kTam * kPorBloque, std::align_val_t(kAlineacion)));
++    for (std::size_t i = kPorBloque; i-- > 0;) {
++      Hueco* h = reinterpret_cast<Hueco*>(bloque + i * kTam);
++      h->siguiente = e.libre;
++      e.libre = h;
++    }
++  }
++};
++
++}  // namespace rex::deko3d
