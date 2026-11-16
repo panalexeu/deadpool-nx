@@ -160,7 +160,7 @@ REXCVAR_DEFINE_BOOL(deadpool_pase_base_escribe_z, true, "Deadpool",
                     "depth writes off: Deadpool relies on the prepass for depth) write depth themselves, GEQUAL. "
                     "Without it nothing wrote the scene depth, the last draw won everywhere and Deadpool's flesh layer "
                     "covered his suit");
-REXCVAR_DEFINE_BOOL(deadpool_pase_base_propia_z, true, "Deadpool",
+REXCVAR_DEFINE_BOOL(deadpool_pase_base_propia_z, false, "Deadpool",
                     "With the depth prepass drawn (deadpool_sin_prepaso_z = false): the scene depth is cleared (depth "
                     "only, the stencil kept) before the frame's first opaque base-pass draw, and the base pass writes "
                     "and tests its own depth. The prepass's depth still feeds what reads it before the base pass (the "
@@ -358,7 +358,10 @@ class RingGraphicsSystem final : public rex::system::IGraphicsSystem {
 #if DEADPOOL_DEKO3D
     REXCVAR_SET(nfsmw_sombras_sin_vegetacion, false);
     REXCVAR_SET(nfsmw_nativo_ps_solo_alfa, false);
-    REXCVAR_SET(nfsmw_dk_sombras_sesgo_pitch, 960);
+    // nfsmw_dk_sombras_sesgo_pitch stays at its default (1600). Singularity's 960 gave the shadow-map slope bias (2.0)
+    // to every depth-only target 960 wide or more: here that is the scene depth prepass at 540 lines (Deadpool's shadow
+    // maps are 800 wide and never got it). The prepass came out nearer by 2 x the surface's depth slope and the base
+    // pass, GEQUAL against it, failed on every pixel: the black world (run18 dump: 3152 units median, 3160 predicted).
     // Telemetry (automatic captures, frame dumps, per-draw traces of light frames, CPU stack sampling) only with
     // telemetria.flag next to the NRO: it costs frames (the stack sampler stops every thread each millisecond).
     {
