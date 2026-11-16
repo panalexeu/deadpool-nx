@@ -1,0 +1,51 @@
+Subject: [PATCH] deko3d: a missing variant's fallback remembered, not looked up again every draw
+
+---
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -998,6 +998,12 @@
+   if (const auto it = cargados_.find(clave); it != cargados_.end()) {
+     return it->second.get();
+   }
++  // A variant the cache lacks, drawn with the general one (nothing compiled here): the decision is remembered, so the
++  // next draws do not repeat the cache search, the name formatting and the hashing below (each draw did: ~5% of the
++  // ring thread in dense scenes, perf_report.py).
++  if (const auto it = sustitutos_.find(clave); it != sustitutos_.end()) {
++    return it->second;
++  }
+   const deko::CacheDksh::Clave clave_cache{info.huella, espec, variante};
+   // A remapped pixel shader (RemapeoInterpoladores): each one the game uses is listed once per session in
+   // cache/variantes_remapeo.txt (SPIR-V fingerprint, specialization, variant, the 32 location bytes in hex), whether
+@@ -1097,7 +1103,9 @@
+         });
+       }
+     }
+-    return ShaderDe(entrada, especializacion, kTodasLasSalidas);
++    const DkShader* general = ShaderDe(entrada, especializacion, kTodasLasSalidas);
++    if (!REXCVAR_GET(nfsmw_dk_compilar_variantes)) sustitutos_.emplace(clave, general);  // nothing will compile
++    return general;
+   }
+   if (!entrada.vertices && variante_ps && en_fondo) {
+     // A pixel shader variant draws as the library's shader while it compiles on the worker: the same image (early
+@@ -1130,7 +1138,9 @@
+         });
+       }
+     }
+-    return ShaderDe(entrada, especializacion, salidas, 0);
++    const DkShader* general = ShaderDe(entrada, especializacion, salidas, 0);
++    if (!REXCVAR_GET(nfsmw_dk_compilar_variantes) && origen.empty()) sustitutos_.emplace(clave, general);
++    return general;
+   }
+   // On the spot (it blocks the ring thread for one compile: ~40-100 ms on the console).
+   const uint64_t inicio = deko::AhoraNs();
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -653,6 +653,8 @@
+     }
+   };
+   std::unordered_map<ClaveCargado, std::unique_ptr<DkShader>, HashCargado> cargados_;  // nullptr: failed
++  // Variants drawn with another (the general one, owned by cargados_) because nothing compiles them on the console.
++  std::unordered_map<ClaveCargado, const DkShader*, HashCargado> sustitutos_;
+   deko::CacheDksh cache_;
+   // Only what this console compiled (and its earlier sessions): what cache/nfsmw_dksh.bin holds. The PC tool's cache next
+   // to the NRO is not written back, so a save is a few hundred KB, not the whole merged cache.
