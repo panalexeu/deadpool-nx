@@ -29,6 +29,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/memory/utils.h>
+#include <rex/system/lzx.h>
 
 #if defined(__SWITCH__)
 #include <switch.h>
@@ -233,6 +234,65 @@ REX_HOOK_RAW(sub_82D9C6A8) {
   } else {
     nativo();
   }
+}
+
+// sub_823BB2B8  the game's LZX chunk decompression (r3 destination, r4 its size, r5 source, r6 source size; answers 1
+//               when the whole destination was produced): an Xbox SDK LZX context with default parameters (128 KB
+//               window), XMemDecompress(ctx, dest, &size, src, srcSize - 4), the context destroyed. Natively with the
+//               SDK's libmspack LZX decoder (lzx_decompress). Package streaming ran it on a loader thread during the
+//               fps dips at a level's start (the recompiled bit decoder sub_82D8FC80). A native failure runs the
+//               original; deadpool_cpu_nativo_comprobar checks the first 300 chunks byte for byte (original kept).
+REXCVAR_DEFINE_BOOL(deadpool_lzx_nativo, true, "Deadpool",
+                    "The game's LZX chunk decompression (sub_823BB2B8) with the SDK's native libmspack decoder");
+
+namespace {
+Comprobacion g_comp_lzx{"LZX (sub_823BB2B8)"};
+std::atomic<uint32_t> g_lzx_fallos{0};
+
+// 1 when the whole destination was produced natively, 0 on any failure (the caller then runs the original).
+bool LzxNativo(uint8_t* base, uint32_t destino, uint32_t tam_destino, uint32_t fuente, uint32_t tam_fuente) {
+  if (tam_fuente < 4) return false;
+  return lzx_decompress(base + fuente, tam_fuente - 4, base + destino, tam_destino, 0x20000, nullptr, 0) == 0;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_823BB2B8);
+REX_HOOK_RAW(sub_823BB2B8) {
+  const uint32_t destino = ctx.r3.u32, tam_destino = ctx.r4.u32, fuente = ctx.r5.u32, tam_fuente = ctx.r6.u32;
+  if (!REXCVAR_GET(deadpool_lzx_nativo) || !destino || !tam_destino || !fuente) {
+    __imp__sub_823BB2B8(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(deadpool_cpu_nativo_comprobar) && g_comp_lzx.llamadas.load(std::memory_order_relaxed) < 300) {
+    const uint32_t n = g_comp_lzx.llamadas.fetch_add(1);
+    std::vector<uint8_t> antes(base + destino, base + destino + tam_destino);
+    __imp__sub_823BB2B8(ctx, base);
+    const uint64_t resultado = ctx.r3.u64;
+    std::vector<uint8_t> ref(base + destino, base + destino + tam_destino);
+    std::memcpy(base + destino, antes.data(), tam_destino);
+    const bool ok = LzxNativo(base, destino, tam_destino, fuente, tam_fuente);
+    const bool igual = ok == (resultado == 1) && (!ok || std::memcmp(base + destino, ref.data(), tam_destino) == 0);
+    if (!igual && g_comp_lzx.diferencias.fetch_add(1) < 8) {
+      REXLOG_WARN("[nativo] {}: DIFFERS on a chunk of {} -> {} bytes (native {}, original {})", g_comp_lzx.nombre,
+                  tam_fuente, tam_destino, ok ? "ok" : "failed", resultado);
+    }
+    std::memcpy(base + destino, ref.data(), tam_destino);
+    ctx.r3.u64 = resultado;
+    if (n + 1 == 300) {
+      REXLOG_INFO("[nativo] {}: 300 chunks checked against the original, {} differed", g_comp_lzx.nombre,
+                  g_comp_lzx.diferencias.load());
+    }
+    return;
+  }
+  if (LzxNativo(base, destino, tam_destino, fuente, tam_fuente)) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  if (g_lzx_fallos.fetch_add(1) < 8) {
+    REXLOG_WARN("[nativo] LZX: native decode failed on a chunk of {} -> {} bytes; the original decodes it", tam_fuente,
+                tam_destino);
+  }
+  __imp__sub_823BB2B8(ctx, base);
 }
 
 // sub_8312AF68  a state-variable filter of the game's audio mixer (XAudio2), Singularity's sub_828EDF78 there ~20% of
