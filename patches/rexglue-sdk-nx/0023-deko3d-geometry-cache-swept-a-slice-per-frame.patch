@@ -1,0 +1,79 @@
+Subject: [PATCH] deko3d: geometry cache swept a slice per frame
+
+Barrer walked and erased the whole table every 128 frames on the ring thread: stalls of
+hundreds of ms in Deadpool's levels. Now 1/128 of the buckets per frame.
+
+---
+--- a/src/x360/deko/geometria.cpp
++++ b/src/x360/deko/geometria.cpp
+@@ -166,8 +166,7 @@
+ void AlmacenGeometria::NuevoFotograma(uint64_t fotograma) {
+   fotograma_ = fotograma;
+   ++epoca_;
+-  if (activo() && fotograma_ - barrido_ >= 128) {
+-    barrido_ = fotograma_;
++  if (activo()) {
+     Barrer();
+   }
+ }
+@@ -183,7 +182,7 @@
+   const uint64_t clave = Clave(direccion, bytes, modo);
+   // A direct-mapped cache in front of the table: the same ranges come back every frame, and one array slot is
+   // cheaper than the map's chain of nodes. The map's entries never move (node-based); Barrer, the only erase,
+-  // empties this cache.
++  // clears the slot of each entry it erases.
+   Rapida& rapida = rapida_[clave & (kRapidas - 1)];
+   Entrada* encontrada = nullptr;
+   bool nueva = false;
+@@ -410,14 +409,32 @@
+ }
+ 
+ void AlmacenGeometria::Barrer() {
+-  rapida_.fill({});
+-  // Entries without a block nobody asked for in a while (the first sightings of one-off ranges).
+-  for (auto it = tabla_.begin(); it != tabla_.end();) {
+-    if (!it->second.tam && it->second.fotograma + 256 < fotograma_) {
+-      it = tabla_.erase(it);
+-    } else {
+-      ++it;
++  // Entries without a block nobody asked for in a while (the first sightings of one-off ranges). A slice of the
++  // table's buckets every frame, the whole table every 128 frames: the sweep used to walk and erase it all at once
++  // every 128 frames, and with the thousands of one-off ranges a frame leaves that froze the ring thread for
++  // hundreds of ms (the stalls of Deadpool's levels, measured with perf_report.py).
++  const size_t cubos = tabla_.bucket_count();
++  if (!cubos) {
++    return;
++  }
++  borrar_.clear();
++  for (size_t n = cubos / 128 + 1; n; --n) {
++    if (cubo_barrido_ >= cubos) {
++      cubo_barrido_ = 0;
++    }
++    for (auto it = tabla_.begin(cubo_barrido_); it != tabla_.end(cubo_barrido_); ++it) {
++      if (!it->second.tam && it->second.fotograma + 256 < fotograma_) {
++        borrar_.push_back(it->first);
++      }
++    }
++    ++cubo_barrido_;
++  }
++  for (const uint64_t clave : borrar_) {
++    Rapida& rapida = rapida_[clave & (kRapidas - 1)];
++    if (rapida.entrada && rapida.clave == clave) {
++      rapida = {};
+     }
++    tabla_.erase(clave);
+   }
+ }
+ 
+--- a/include/rex/x360/deko/geometria.h
++++ b/include/rex/x360/deko/geometria.h
+@@ -179,7 +179,8 @@
+   uint64_t fotograma_ = 1;
+   uint64_t trabajo_abierto_ = 0;
+   uint64_t terminado_hasta_ = 0;  // every work up to this one is done
+-  uint64_t barrido_ = 0;          // frame of the last sweep
++  size_t cubo_barrido_ = 0;       // next bucket of tabla_ for Barrer
++  std::vector<uint64_t> borrar_;  // Barrer's keys to erase (kept to reuse its memory)
+   bool muestreo_ = false;
+   Estadisticas estadisticas_;
+ };

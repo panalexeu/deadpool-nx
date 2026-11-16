@@ -110,6 +110,7 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     ap.add_argument('--elf', default=os.path.join(root, 'out/build/switch-native/deadpool'))
     ap.add_argument('--hitch-ms', type=float, default=50.0)
+    ap.add_argument('--hitch-max-ms', type=float, default=1000.0, help='longer frames are loads, left out')
     ap.add_argument('--top', type=int, default=25)
     ap.add_argument('-o', '--output')
     a = ap.parse_args()
@@ -270,8 +271,8 @@ def main():
 
         # ---- stalls
         hitches = [(frames[i - 1][0], frames[i][0]) for i in range(1, len(frames))
-                   if (frames[i][0] - frames[i - 1][0]) * 1000.0 / freq > a.hitch_ms]
-        p(f'## Stalls: frames over {a.hitch_ms:g} ms\n')
+                   if a.hitch_ms < (frames[i][0] - frames[i - 1][0]) * 1000.0 / freq <= a.hitch_max_ms]
+        p(f'## Stalls: frames of {a.hitch_ms:g}-{a.hitch_max_ms:g} ms (longer ones are loads)\n')
         if not hitches:
             p('None.\n')
         else:
