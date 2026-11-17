@@ -58,10 +58,15 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
 6. Recommended: lighter engine settings in the game's own config, for the fights. In the heaviest late-level fight
    (same fight, 540p, PGO build) the worst second went from 20 to 23 fps, the 1 % low from 15 to about 20 fps, and
    the seconds under 25 fps from 10 % to 2 %. The cost: no dynamic shadows, cheaper particle effects and character
-   meshes, less debris, no high-detail props and effects (`DetailMode=1`), no blood or bullet marks (`DynamicDecals`). The config (`Coalesced.ini`) is XOR-obfuscated; `tools/switch/coalesced_ini.py` decodes,
-   edits and re-encodes it (`decode` / `encode` / `set`), and the game loads the edited file as is:
+   meshes, less debris, no high-detail props and effects (`DetailMode=1`), no blood or bullet marks (`DynamicDecals`).
+   The config (`Coalesced.ini`) is XOR-obfuscated with a key stored in the game's executable;
+   `tools/switch/coalesced_ini.py` decodes, edits and re-encodes it (`decode` / `encode` / `set`), and the game loads
+   the edited file as is. The key is not in this repository: the tool reads it from your own `default.xex`, decrypted
+   and decompressed to its basic image. Make that image once with xorloser's XexTool (`xextool -b default.bin
+   default.xex`, from your `deadpool-extract/`), then:
 
    ```bash
+   export DEADPOOL_IMAGE=default.bin   # your decrypted image (the tool reads the key at offset 0x5F00)
    C=deadpool-extract/TransGame/Config/Xenon/Cooked/Coalesced.ini
    cp $C $C.orig
    python3 tools/switch/coalesced_ini.py set $C.orig $C \

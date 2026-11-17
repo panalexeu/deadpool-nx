@@ -3,12 +3,15 @@
 
 The archive is the game's 16 ini files in one: a big-endian count of strings (2 per file), then per file its name and
 its whole text, each as a big-endian length (including a terminator) and that many bytes. The text is XORed with a
-key the executable holds as a UTF-16 string (0x82005F00); the key index runs on across all
-strings of the archive, and each terminator is stored as a raw 0 that does not take a key byte.
+key the executable holds as a UTF-16 string at 0x82005F00; the key index runs on across all strings of the archive,
+and each terminator is stored as a raw 0 that does not take a key byte.
 
-    tools/switch/coalesced_ini.py decode <Coalesced.ini> <folder>       one .ini per file in <folder>
-    tools/switch/coalesced_ini.py encode <folder> <Coalesced.ini>       back (the names in the folder's order.txt)
-    tools/switch/coalesced_ini.py set <Coalesced.ini> <output> File.ini:[Section]:Key=Value ...
+The key is not part of this repository: it is read from your own executable, decrypted and decompressed to a basic
+image (the README says how), given with --image (or DEADPOOL_IMAGE in the environment).
+
+    tools/switch/coalesced_ini.py --image <default.bin> decode <Coalesced.ini> <folder>   one .ini per file in <folder>
+    tools/switch/coalesced_ini.py --image <default.bin> encode <folder> <Coalesced.ini>   back (names in order.txt)
+    tools/switch/coalesced_ini.py --image <default.bin> set <Coalesced.ini> <output> File.ini:[Section]:Key=Value ...
 
 `set` changes keys in place (a key missing from the section is added at its end). Decoding then encoding an unchanged
 folder gives the original file byte for byte.
@@ -18,7 +21,25 @@ import re
 import struct
 import sys
 
-KEY = b""  # read from your own decrypted executable (see the README)
+KEY = b""
+KEY_OFFSET = 0x5F00  # 0x82005F00 in the basic image, which starts at 0x82000000
+
+
+def load_key(image_path):
+    """The UTF-16 (big-endian) string at KEY_OFFSET of the decrypted, decompressed executable, up to its terminator."""
+    data = open(image_path, "rb").read()
+    key = bytearray()
+    for i in range(KEY_OFFSET, min(len(data) - 1, KEY_OFFSET + 512), 2):
+        hi, lo = data[i], data[i + 1]
+        if hi == 0 and lo == 0:
+            break
+        if hi != 0 or not 0x20 < lo < 0x7F:
+            key = bytearray()
+            break
+        key.append(lo)
+    if len(key) < 16:
+        raise SystemExit(f"{image_path}: no key at 0x{KEY_OFFSET:X} (not a decrypted, decompressed Deadpool image?)")
+    return bytes(key)
 
 
 def decode(data):
@@ -74,6 +95,14 @@ def set_key(text, section, key, value):
 
 
 def main(argv):
+    global KEY
+    image = os.environ.get("DEADPOOL_IMAGE")
+    if len(argv) >= 2 and argv[0] == "--image":
+        image, argv = argv[1], argv[2:]
+    if not image:
+        print(__doc__)
+        return 1
+    KEY = load_key(image)
     if len(argv) == 3 and argv[0] == "decode":
         files = decode(open(argv[1], "rb").read())
         os.makedirs(argv[2], exist_ok=True)
