@@ -1,0 +1,1057 @@
+singularity-nx SDK patches 0002-0016 (Singularity and Dead Space 2 fixes on deko3d)
+
+Applied in order from singularity-nx, on top of 0001: occlusion results read as the GPU writes them,
+the background shader compiler below the game, WaitMultiple polling every 100 us, drawing while
+variants compile off, linear run-time textures, stencil-only depth clears, 32768 image descriptors,
+XMA input reported used only after the game is done, depth targets merged after their resolve,
+descriptor sets per partial submit, the achievement popup closing itself, emulator and audio thread
+cores, vertex buffers read by the shader, prepared shader info in cache/info_shaders.bin.
+
+---
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 665602b..2e25038 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -288,6 +288,12 @@ class XmaContext {
+   void AnotarProduccion(bool produjo, uint8_t motivo, const XMA_CONTEXT_DATA& data);
+   std::chrono::steady_clock::time_point silencio_desde_{};
+   bool en_silencio_ = false;
++  // audio_xma_fin_tras_drenar: the input ran out in a pass that also wrote output; the input-valid bits (fin_mascara_:
++  // bit 0 = buffer 0, bit 1 = buffer 1) stay set until the game has read that output.
++  bool fin_pendiente_ = false;
++  uint32_t fin_mascara_ = 0, fin_buffer0_ = 0, fin_buffer1_ = 0;
++  std::chrono::steady_clock::time_point fin_desde_{};
++  bool fin_avisado_ = false;
+   uint32_t silencio_pasadas_ = 0;
+   uint8_t silencio_motivo_ = 0;
+   std::atomic<bool> is_allocated_ = false;
+diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
+index 1f52480..0cdb8dc 100644
+--- a/include/rex/rex_app.h
++++ b/include/rex/rex_app.h
+@@ -307,7 +307,8 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
+   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
+   std::unique_ptr<ui::SettingsDialog> settings_overlay_;
+   std::unique_ptr<ui::ImGuiDialog> achievements_overlay_;
+-  std::shared_ptr<ui::AchievementNotificationDialog> achievement_notification_;
++  // Not owned while open: it deletes itself when it has nothing left to show (SetOnClosed clears this).
++  ui::AchievementNotificationDialog* achievement_notification_ = nullptr;
+   uint64_t achievement_notification_listener_ = 0;
+   ui::DebugOverlayDialog::FrameStatsProvider frame_stats_provider_;
+   std::filesystem::path config_path_;
+diff --git a/include/rex/ui/deko3d/cache_dksh.h b/include/rex/ui/deko3d/cache_dksh.h
+index 0cc6e9e..d253a53 100644
+--- a/include/rex/ui/deko3d/cache_dksh.h
++++ b/include/rex/ui/deko3d/cache_dksh.h
+@@ -24,6 +24,7 @@
+ #include <cstdio>
+ #include <filesystem>
+ #include <map>
++#include <atomic>
+ #include <mutex>
+ #include <span>
+ #include <string>
+@@ -59,6 +60,9 @@ class CacheDksh {
+   const std::vector<uint8_t>* Buscar(const Clave& clave) const;
+   void Anadir(const Clave& clave, std::vector<uint8_t> dksh);
+   size_t size() const { return entradas_.size() + indice_.size(); }
++  // Entries read from the file so far (CargarIndice), and the time it took: the first use of each one.
++  uint64_t lecturas() const { return lecturas_.load(std::memory_order_relaxed); }
++  uint64_t lecturas_ns() const { return lecturas_ns_.load(std::memory_order_relaxed); }
+   const std::map<Clave, std::vector<uint8_t>>& entradas() const { return entradas_; }
+   // Takes the entries out (the cache is left empty): merging a large cache into another without copying it.
+   std::map<Clave, std::vector<uint8_t>> Extraer() { return std::move(entradas_); }
+@@ -75,6 +79,7 @@ class CacheDksh {
+   std::filesystem::path ruta_;
+   mutable std::FILE* archivo_ = nullptr;
+   mutable std::mutex mutex_;
++  mutable std::atomic<uint64_t> lecturas_{0}, lecturas_ns_{0};
+ 
+  public:
+   CacheDksh() = default;
+diff --git a/include/rex/ui/overlay/achievement_notification.h b/include/rex/ui/overlay/achievement_notification.h
+index f9921ed..af1ca8c 100644
+--- a/include/rex/ui/overlay/achievement_notification.h
++++ b/include/rex/ui/overlay/achievement_notification.h
+@@ -10,6 +10,9 @@
+  */
+ #pragma once
+ 
++#include <functional>
++#include <utility>
++
+ #include <rex/system/achievement_manager.h>
+ #include <rex/ui/imgui_dialog.h>
+ 
+@@ -22,8 +25,19 @@ class AchievementNotificationDialog : public ImGuiDialog {
+   // Thread-safe implementations may receive events from guest threads.
+   virtual void Push(const rex::system::AchievementEvent& event) = 0;
+ 
++  // Called on the UI thread when the dialog closes itself; it is deleted right after. A dialog that closes once it has
++  // nothing left to show lets the presenter leave the interface-thread painting it needs while any overlay exists
++  // (which drops displayed frames and makes the FPS counter count interface repaints).
++  void SetOnClosed(std::function<void()> on_closed) { on_closed_ = std::move(on_closed); }
++
+  protected:
+   explicit AchievementNotificationDialog(ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
++  void OnClose() override {
++    if (on_closed_) on_closed_();
++  }
++
++ private:
++  std::function<void()> on_closed_;
+ };
+ 
+ }  // namespace rex::ui
+diff --git a/include/rex/x360/deko/render.h b/include/rex/x360/deko/render.h
+index f43d64a..01a2281 100644
+--- a/include/rex/x360/deko/render.h
++++ b/include/rex/x360/deko/render.h
+@@ -182,6 +182,8 @@ class RenderDk final : public DestinosNativos {
+   void EstadisticasOclusion(uint64_t valores[5]) const override;
+   bool Dibujar(const PeticionDibujo& peticion) override;  // nfsmw_dk_dibujos.cpp
+   void PedirVolcado() override { volcado_pedido_ = true; }
++  bool FusionarProfundidadPosterior() override;
++  void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const override;
+   EstadisticasDibujos EstadisticasDeDibujos() const override;
+   void EsperarSubidas() override {}  // vertices are copied on the ring thread, before Dibujar returns
+   uint64_t CopiasProfundidad() const override { return copias_profundidad_; }
+@@ -240,7 +242,12 @@ class RenderDk final : public DestinosNativos {
+   // modos_signo (4 ints, per destination channel): 0 copy, 1 signed 8-bit, 2 biased (2x - 1); nullptr: plain copy.
+   bool Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto, ImagenDk& destino,
+                 uint32_t dx, uint32_t dy, const int32_t* modos_signo = nullptr, bool limitar_7e3 = false,
+-                float escala = 1.0f);  // 2^copy_dest_exp_bias (RB_COPY_DEST_INFO bits 16-21)
++                float escala = 1.0f,  // 2^copy_dest_exp_bias (RB_COPY_DEST_INFO bits 16-21)
++                bool z_mas_cerca = false);  // depth: only where the source is nearer (Greater), not Always
++  // The last depth resolve to a texture (CopiarProfundidad): its target and texture, for FusionarProfundidadPosterior.
++  uint32_t ultima_z_info_ = 0, ultima_z_pitch_ = 0, ultima_z_textura_ = 0;
++  std::array<uint32_t, 6> ultima_z_rect_{};  // source x, y, width, height; destination x, y
++  bool ultima_z_valida_ = false;
+   bool rop_sin_barrera_ = true;
+   bool copia3d_pendiente_ = false;
+   uint64_t copias_3d_ = 0, barreras_fragmentos_ = 0;
+@@ -457,6 +464,11 @@ class RenderDk final : public DestinosNativos {
+     bool interpoladores_listos = false;
+   };
+   InfoShader& InfoDe(const EntradaShader& entrada);
++  // InfoDe's results from earlier sessions, by container fingerprint (cache/info_shaders.bin): a pixel shader's first
++  // use converted its whole SPIR-V to GLSL only to learn its interpolators, ~5-10 ms each on the ring thread (most of
++  // the lightning freeze once the reads were gone). info_sucia_: new entries since the last save.
++  std::unordered_map<uint64_t, InfoShader> info_guardada_;
++  bool info_sucia_ = false;
+   void RecogerCompilaciones();
+ 
+   // ---- Textures, samplers and descriptors (nfsmw_dk_texturas.cpp)
+@@ -541,6 +553,8 @@ class RenderDk final : public DestinosNativos {
+   uint8_t* oclusion_cpu_ = nullptr;
+   DkGpuAddr oclusion_gpu_ = 0;
+   uint32_t oclusion_siguiente_ = 0;
++  uint64_t oclusion_directas_ = 0;      // results read before their work finished (nfsmw_dk_oclusion_directa)
++  uint64_t oclusion_envio_parcial_ = ~0ull;  // dibujados_ at the last partial submit for a waiting game
+   std::unordered_map<uint32_t, ConsultaDk> oclusion_abiertas_;     // by base: started, not ended
+   std::deque<ConsultaDk> oclusion_pendientes_;                     // ended, the GPU has not finished them
+   std::unordered_map<uint64_t, uint64_t> oclusion_listas_;         // by ticket: counted, not asked for yet
+@@ -589,6 +603,7 @@ class RenderDk final : public DestinosNativos {
+   std::vector<uint32_t> descriptores_libres_;
+   std::vector<std::vector<uint32_t>> descriptores_por_liberar_;  // per work slot
+   uint32_t siguiente_descriptor_ = 8;
++  uint64_t suelta_por_descriptores_ = 0;  // frame of the last release forced by the descriptor table
+   std::unordered_map<uint64_t, uint32_t> samplers_;  // key -> descriptor
+   uint32_t avisos_nivel_vacio_ = 0;
+   uint32_t siguiente_sampler_ = 1;
+@@ -626,6 +641,9 @@ class RenderDk final : public DestinosNativos {
+   deko::CacheDksh cache_consola_;
+   bool cache_sucia_ = false;
+   std::thread guardando_;  // writes the cache file (GuardarCacheSiHaceFalta)
++  std::atomic<uint64_t> info_ns_{0};  // InfoDe's first-time work (SPIR-V to GLSL for the interpolators)
++  uint64_t info_guardada_ns_ = 0;  // last write of cache/info_shaders.bin (every 30 s at most while playing)
++  void GuardarInfoSiHaceFalta(bool ya);
+   uint64_t cache_guardada_ns_ = 0;
+   uint32_t compilados_en_el_acto_ = 0, compilados_en_fondo_ = 0, aciertos_cache_ = 0;
+   // Background compiles (the exact vertex shader variant, while the one with every interpolator draws). The
+diff --git a/include/rex/x360/destinos.h b/include/rex/x360/destinos.h
+index 8175113..4847b19 100644
+--- a/include/rex/x360/destinos.h
++++ b/include/rex/x360/destinos.h
+@@ -117,6 +117,16 @@ class DestinosNativos {
+   virtual bool Dibujar(const PeticionDibujo& peticion) = 0;
+   // Debugging: every texture resolved during the next frame is written to the SD card as a BMP (a backend that can).
+   virtual void PedirVolcado() {}
++  // The depth target last resolved to a texture, merged into that texture keeping the nearer depth (reverse Z: the
++  // larger value): what was drawn there after the resolve (a first-person weapon after its own depth clear) reaches
++  // the post-processing that samples the texture. false if there was nothing to merge.
++  virtual bool FusionarProfundidadPosterior() { return false; }
++  // First uses so far: compiled shaders read from the card, and the time spent (reading them and preparing each shader
++  // the first time). For telling whether a long frame was waiting for shaders.
++  virtual void PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const {
++    lecturas = 0;
++    nanosegundos = 0;
++  }
+   virtual EstadisticasDibujos EstadisticasDeDibujos() const = 0;
+   // Deferred vertex copies finished: before returning the read pointer to the game.
+   virtual void EsperarSubidas() = 0;
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index eefee0e..9faaeec 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -24,6 +24,9 @@
+ #include <rex/system/thread_state.h>
+ #include <rex/thread.h>
+ #include <rex/cvar.h>
++#if REX_PLATFORM_SWITCH
++#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoAudio: the audio threads' core
++#endif
+ 
+ REXCVAR_DEFINE_INT32(
+     audio_maxqframes, 8, "Audio",
+@@ -119,7 +122,13 @@ void AudioSystem::WorkerThreadMain() {
+ 
+   // Main run loop.
+   uint32_t diag_pump_count = 0;
++#if REX_PLATFORM_SWITCH
++  int nucleo_aplicado = -1;
++#endif
+   while (worker_running_) {
++#if REX_PLATFORM_SWITCH
++    RexSwitchSeguirNucleoAudio(&nucleo_aplicado);
++#endif
+     // These handles signify the number of submitted samples. Once we reach
+     // 64 samples, we wait until our audio backend releases a semaphore
+     // (signaling a sample has finished playing)
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index a221210..180d676 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -58,6 +58,11 @@ REXCVAR_DEFINE_INT32(audio_volcado_xma_contextos, 12, "Audio",
+                      "Diagnostico: contextos XMA que se vuelcan como mucho");
+ REXCVAR_DEFINE_INT32(audio_volcado_xma_mb, 32, "Audio",
+                      "Diagnostico: megas como mucho de audio XMA acumulado sin escribir");
++REXCVAR_DEFINE_BOOL(audio_xma_fin_tras_drenar, true, "Audio",
++                    "A sound's input is reported used up (input-valid bits cleared) only once the game has read the "
++                    "output the last pass wrote. The game's XAudio2 retires a buffer once, on the tick its input runs "
++                    "out: with output still unread it completes the buffer afterwards and never retires it (the sound "
++                    "never finishes; the audio tapes' speech never started)");
+ REXCVAR_DEFINE_INT32(audio_volcado_xma_min_s, 2, "Audio",
+                      "Diagnostico: segundos minimos de un sonido XMA que se guardan cuando termina");
+ 
+@@ -398,6 +403,48 @@ bool XmaContext::Work() {
+     return true;
+   }
+ 
++  // audio_xma_fin_tras_drenar: the input is used up but not yet reported: deliver the rest of the last frame, then
++  // wait for the game to read the output, then report it.
++  if (fin_pendiente_) {
++    const bool otra_entrada = data.input_buffer_0_ptr != fin_buffer0_ || data.input_buffer_1_ptr != fin_buffer1_ ||
++                              ((data.input_buffer_0_valid | (data.input_buffer_1_valid << 1)) & ~fin_mascara_) != 0;
++    if (otra_entrada) {
++      // New input queued meanwhile (a stream's next buffer): the held buffers are used up, decode the new one.
++      if (fin_mascara_ & 1) data.input_buffer_0_valid = 0;
++      if (fin_mascara_ & 2) data.input_buffer_1_valid = 0;
++      fin_pendiente_ = false;
++    } else {
++      // A sound held for 2 s means its output is not being read (it should be a few ms): say so once.
++      if (!fin_avisado_ && std::chrono::steady_clock::now() - fin_desde_ > std::chrono::seconds(2)) {
++        fin_avisado_ = true;
++        REXAPU_WARN("XMA: el contexto {} lleva 2 s sin poder dar su entrada por terminada (subtramas pendientes {}, "
++                    "salida leida {} de {})",
++                    id(), uint32_t(current_frame_remaining_subframes_), uint32_t(data.output_buffer_read_offset),
++                    uint32_t(data.output_buffer_write_offset));
++      }
++      memory::RingBuffer rb = PrepareOutputRingBuffer(&data);
++      uint32_t escritos = 0;
++      while (current_frame_remaining_subframes_) {  // the rest of the last frame, as far as the output has room
++        const uint32_t n = Consume(&rb, &data);
++        if (!n) break;
++        escritos += n;
++      }
++      data.output_buffer_write_offset = rb.write_offset() / kOutputBytesPerBlock;
++      if (escritos && rb.empty()) {
++        data.output_buffer_valid = 0;  // full
++      }
++      if (!current_frame_remaining_subframes_ && data.output_buffer_valid &&
++          data.output_buffer_read_offset == data.output_buffer_write_offset) {
++        // All delivered and read: now the input is reported used up (the game's busy -> idle edge comes after it).
++        if (fin_mascara_ & 1) data.input_buffer_0_valid = 0;
++        if (fin_mascara_ & 2) data.input_buffer_1_valid = 0;
++        fin_pendiente_ = false;
++      }
++      StoreContextMerged(data, initial_data, context_ptr);
++      return true;  // no new input to decode
++    }
++  }
++
+   memory::RingBuffer output_rb = PrepareOutputRingBuffer(&data);
+   uint32_t output_bytes_written = 0;
+ 
+@@ -475,6 +522,24 @@ bool XmaContext::Work() {
+     data.output_buffer_valid = 0;
+   }
+ 
++  // audio_xma_fin_tras_drenar: this pass used up the input but the last frame is not fully delivered or the game has
++  // not read the output yet: keep the input-valid bits set (see above: the frame is finished, nothing new decoded)
++  // until both are done. Measured on the console: every sound that
++  // never finished had its last output written in the pass that used up its input, and XAudio2's one-time
++  // end-of-buffer step (sub_828E22E0, on the busy -> idle edge) ran ~5 ms later, before that output was read.
++  if (REXCVAR_GET(audio_xma_fin_tras_drenar) && initial_data.IsAnyInputBufferValid() &&
++      !data.IsAnyInputBufferValid() && data.error_status != 4 &&
++      (current_frame_remaining_subframes_ ||
++       !(data.output_buffer_valid && data.output_buffer_read_offset == data.output_buffer_write_offset))) {
++    fin_mascara_ = uint32_t(initial_data.input_buffer_0_valid) | (uint32_t(initial_data.input_buffer_1_valid) << 1);
++    fin_buffer0_ = data.input_buffer_0_ptr;
++    fin_buffer1_ = data.input_buffer_1_ptr;
++    data.input_buffer_0_valid = initial_data.input_buffer_0_valid;
++    data.input_buffer_1_valid = initial_data.input_buffer_1_valid;
++    fin_pendiente_ = true;
++    fin_desde_ = std::chrono::steady_clock::now();
++    fin_avisado_ = false;
++  }
+   StoreContextMerged(data, initial_data, context_ptr);
+   AnotarProduccion(output_bytes_written != 0, motivo_silencio, data);  // Measurement only
+   return true;
+@@ -521,6 +586,7 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+ }
+ 
+ void XmaContext::ResetDecoderState() {
++  fin_pendiente_ = false;
+   ReiniciarVolcadoXma(id());  // diagnostico audio_volcado_xma_s
+   // A freed or re-initialized context is a new logical stream, so the previous
+   // wave's MDCT overlap-add tail must not survive into frame 0 of the next one.
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index 5c1ec44..80169c4 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -29,6 +29,9 @@
+ extern "C" {
+ #include "libavutil/cpu.h"
+ #include "libavutil/log.h"
++#if REX_PLATFORM_SWITCH
++#include "../core/threading_switch.h"  // RexSwitchSeguirNucleoAudio: the audio threads' core
++#endif
+ }  // extern "C"
+ 
+ REXCVAR_DEFINE_BOOL(ffmpeg_verbose, false, "Audio", "Verbose FFmpeg output (debug and above)");
+@@ -307,7 +310,13 @@ void InformarXma() {
+ }  // namespace
+ 
+ void XmaDecoder::WorkerThreadMain() {
++#if REX_PLATFORM_SWITCH
++  int nucleo_aplicado = -1;
++#endif
+   while (worker_running_) {
++#if REX_PLATFORM_SWITCH
++    RexSwitchSeguirNucleoAudio(&nucleo_aplicado);
++#endif
+     // Okay, let's loop through XMA contexts to find ones we need to decode!
+     bool did_work = false;
+     // First the ones a kick has just enabled: they are reached without walking all 320 or touching their
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index e619594..cc2a58d 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -499,15 +499,17 @@ class PosixConditionBase {
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
++      // Polls every 100 us (was 1 ms): the game's audio thread waits here for each 5.33 ms block of the audio driver
++      // and woke up to 1 ms late every time, which made it miss blocks (the sound crackled).
+       if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        std::this_thread::sleep_for(std::chrono::microseconds(100));
+       } else {
+         // In microseconds. In milliseconds, the remainder of a short wait was
+         // truncated to 0 and sleep_for(0) does not sleep: the alertable wait asks
+         // for 1 ms slices, so WaitAny spun for its whole timeout. On Switch the
+         // audio thread (0x2B) ate a whole core this way.
+         auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::microseconds(1000));
++        auto sleep_time = std::min(remaining, std::chrono::microseconds(100));
+         std::this_thread::sleep_for(sleep_time);
+       }
+     }
+diff --git a/src/core/threading_switch.cpp b/src/core/threading_switch.cpp
+index 9743cbc..5f56385 100644
+--- a/src/core/threading_switch.cpp
++++ b/src/core/threading_switch.cpp
+@@ -6,6 +6,7 @@
+  * scheme, which is what decides whether the game stutters or not.
+  */
+ 
++#include <atomic>
+ #include <rex/platform.h>
+ 
+ #if REX_PLATFORM_SWITCH
+@@ -331,6 +332,38 @@ bool RexSwitchPinCurrentThreadToCore(int core) {
+  */
+ int RexSwitchCurrentCore(void) { return int(svcGetCurrentProcessorNumber()); }
+ 
++static std::atomic<int> g_nucleo_host{-1};
++
++static std::atomic<int> g_nucleo_audio{-1};
++
++void RexSwitchFijarNucleoHost(int core) { g_nucleo_host.store(core, std::memory_order_relaxed); }
++void RexSwitchFijarNucleoAudio(int core) { g_nucleo_audio.store(core, std::memory_order_relaxed); }
++
++static void SeguirNucleo(int v, int* aplicado);
++
++void RexSwitchSeguirNucleoHost(int* aplicado) { SeguirNucleo(g_nucleo_host.load(std::memory_order_relaxed), aplicado); }
++void RexSwitchSeguirNucleoAudio(int* aplicado) { SeguirNucleo(g_nucleo_audio.load(std::memory_order_relaxed), aplicado); }
++
++static void SeguirNucleo(int v, int* aplicado) {
++  if (v == *aplicado) {
++    return;
++  }
++  *aplicado = v;
++  if (v >= 0) {
++    RexSwitchPinCurrentThreadToCore(v);
++    return;
++  }
++  // Back to every core of the process, preferring the one it is on.
++  u64 mascara_proceso = 0;
++  if (R_FAILED(svcGetInfo(&mascara_proceso, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) || !mascara_proceso) {
++    mascara_proceso = 0x7;
++  }
++  Thread* yo = threadGetSelf();
++  const Handle h = (yo != nullptr) ? yo->handle : CUR_THREAD_HANDLE;
++  const s32 actual = s32(svcGetCurrentProcessorNumber());
++  svcSetThreadCoreMask(h, (mascara_proceso >> actual) & 1 ? actual : -1, mascara_proceso);
++}
++
+ }  // extern "C"
+ 
+ #endif  /* REX_PLATFORM_SWITCH */
+diff --git a/src/core/threading_switch.h b/src/core/threading_switch.h
+index 9560d3d..78824a5 100644
+--- a/src/core/threading_switch.h
++++ b/src/core/threading_switch.h
+@@ -169,6 +169,18 @@ bool RexSwitchPinCurrentThreadToCore(int core);
+ /* Which core the calling thread is running on right now. It can only be asked about oneself. */
+ int RexSwitchCurrentCore(void);
+ 
++/*
++ * The core of the emulator's own busy threads (GPU ring, XMA decoder, audio worker): -1 lets them run on every core of
++ * the process (as before), 0-2 keeps them on that one. They outrank the game's threads, so wherever they land they
++ * preempt the game; kept on one core, the game's rendering thread has the other two to itself. Each thread follows the
++ * value from its own loop (RexSwitchSeguirNucleoHost with a variable of its own, starting at -1).
++ */
++void RexSwitchFijarNucleoHost(int core);
++void RexSwitchSeguirNucleoHost(int* aplicado);
++/* The same for the audio threads (XMA decoder, audio worker), separately: -1 every core. */
++void RexSwitchFijarNucleoAudio(int core);
++void RexSwitchSeguirNucleoAudio(int* aplicado);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/ui/deko3d/cache_dksh.cpp b/src/ui/deko3d/cache_dksh.cpp
+index 8eb21fb..2160f12 100644
+--- a/src/ui/deko3d/cache_dksh.cpp
++++ b/src/ui/deko3d/cache_dksh.cpp
+@@ -1,5 +1,6 @@
+ // rex::deko3d (from nfsmw-nx): the DKSH cache file. See rex/ui/deko3d/cache_dksh.h.
+ 
++#include <chrono>
+ #include <rex/ui/deko3d/cache_dksh.h>
+ 
+ #include <rex/ui/deko3d/glsl.h>
+@@ -180,11 +181,16 @@ const std::vector<uint8_t>* CacheDksh::Buscar(const Clave& clave) const {
+   if (it == indice_.end() || it->clave != clave || !archivo_) {
+     return nullptr;
+   }
++  const auto inicio = std::chrono::steady_clock::now();
+   std::vector<uint8_t> dksh(it->bytes);
+   if (std::fseek(archivo_, long(it->posicion), SEEK_SET) != 0 ||
+       std::fread(dksh.data(), 1, dksh.size(), archivo_) != dksh.size()) {
+     return nullptr;
+   }
++  lecturas_.fetch_add(1, std::memory_order_relaxed);
++  lecturas_ns_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - inicio).count()),
++                         std::memory_order_relaxed);
+   return &entradas_.emplace(clave, std::move(dksh)).first->second;
+ }
+ 
+diff --git a/src/ui/deko3d/compilador.cpp b/src/ui/deko3d/compilador.cpp
+index 9e913c3..1b791bc 100644
+--- a/src/ui/deko3d/compilador.cpp
++++ b/src/ui/deko3d/compilador.cpp
+@@ -16,7 +16,11 @@ namespace rex::deko3d {
+ 
+ namespace {
+ constexpr size_t kPila = 8u << 20;
+-constexpr int kPrioridad = 0x3B;
++// Below the game's threads (0x3B): a shader missing from the DKSH cache is compiled with the CPU the game leaves free,
++// on any core. At 0x3B and pinned to core 0 it took up to 68% of that core from the game's render and audio threads
++// (Singularity's city: the sound crackled while 17 variants compiled).
++constexpr int kPrioridad = 0x3C;
++constexpr u32 kNucleos = 0x7;
+ 
+ // A shader that uses what the game's do (a UBO, a texture, a dynamic loop), to know at start that uam works here.
+ constexpr char kAutoprueba[] = R"(#version 460
+@@ -79,9 +83,21 @@ struct Compilador::Datos {
+ };
+ 
+ Compilador::Compilador() : datos_(std::make_unique<Datos>()) {
+-  if (R_FAILED(threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, kPrioridad, -2)) ||
+-      R_FAILED(threadStart(&datos_->hilo))) {
+-    Fatal("[dk] no se pudo crear el hilo de compilacion de shaders (pila de 8 MiB, prioridad 0x%X)", kPrioridad);
++  // Below the game if the system allows it, else at the game's priority (the old behaviour); any core if allowed.
++  int prioridad = kPrioridad;
++  Result rc = threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, prioridad, -2);
++  if (R_FAILED(rc)) {
++    prioridad = 0x3B;
++    rc = threadCreate(&datos_->hilo, Datos::Bucle, datos_.get(), nullptr, kPila, prioridad, -2);
++  }
++  if (R_FAILED(rc)) {
++    Fatal("[dk] no se pudo crear el hilo de compilacion de shaders (pila de 8 MiB, prioridad 0x%X): 0x%X", prioridad, rc);
++  }
++  const Result rc_nucleos = svcSetThreadCoreMask(datos_->hilo.handle, -3, kNucleos);
++  Registro("[dk] hilo de compilacion de shaders: prioridad 0x%X, nucleos 0x%X (%s)", prioridad, kNucleos,
++           R_SUCCEEDED(rc_nucleos) ? "aplicados" : "no permitidos, el nucleo por defecto");
++  if (R_FAILED(threadStart(&datos_->hilo))) {
++    Fatal("[dk] no se pudo arrancar el hilo de compilacion de shaders");
+   }
+ }
+ 
+diff --git a/src/ui/deko3d/nucleo.cpp b/src/ui/deko3d/nucleo.cpp
+index 24ae14b..b3a26a1 100644
+--- a/src/ui/deko3d/nucleo.cpp
++++ b/src/ui/deko3d/nucleo.cpp
+@@ -406,6 +406,12 @@ void Nucleo::EnviarParcial() {
+   } else {
+     disp_->Enviar(dkCmdBufFinishList(comandos_), "un envio parcial");
+   }
++  // The descriptor sets are queue state, not command list state: whatever another Nucleo submitted on this queue
++  // between two pieces of this work (the presenter painting from the interface thread while an achievement popup is
++  // up) left its own sets bound. Without this, the rest of the frame looked its textures up in the presenter's small
++  // table: black or wrong textures (the screen flashed black under the popup) or, past its end, a GPU fault that
++  // put the queue in error.
++  BindDescriptores();
+ }
+ 
+ bool Nucleo::TrabajoTerminado(uint64_t trabajo) {
+diff --git a/src/ui/overlay/achievement_toast.cpp b/src/ui/overlay/achievement_toast.cpp
+index 53b8c0b..a3620a8 100644
+--- a/src/ui/overlay/achievement_toast.cpp
++++ b/src/ui/overlay/achievement_toast.cpp
+@@ -48,6 +48,9 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
+       }
+     }
+     if (queue_.empty()) {
++      // Nothing left to show: the dialog goes (ImGuiDialog::Draw deletes it after this), so the presenter goes back
++      // to painting from the game thread. The next achievement creates a new one.
++      Close();
+       return;
+     }
+     toast = queue_.front();
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index 73742e6..a477aef 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -481,8 +481,11 @@ void ReXApp::LaunchModule() {
+             rex::system::AchievementEvent copia = event;
+             app_context().CallInUIThreadDeferred([this, copia]() {
+               if (!achievement_notification_) {
+-                achievement_notification_ = std::shared_ptr<ui::AchievementNotificationDialog>(
+-                    CreateAchievementNotificationDialog());
++                // Not owned: a dialog that closes itself deletes itself, and tells us first.
++                achievement_notification_ = CreateAchievementNotificationDialog().release();
++                if (achievement_notification_) {
++                  achievement_notification_->SetOnClosed([this]() { achievement_notification_ = nullptr; });
++                }
+               }
+               if (achievement_notification_) {
+                 achievement_notification_->Push(copia);
+@@ -626,7 +629,8 @@ void ReXApp::OnDestroy() {
+     }
+     achievement_notification_listener_ = 0;
+   }
+-  achievement_notification_.reset();
++  delete achievement_notification_;  // still open (not closed by itself): its destructor leaves the drawer
++  achievement_notification_ = nullptr;
+   achievements_overlay_.reset();
+   settings_overlay_.reset();
+   console_overlay_.reset();
+diff --git a/src/x360/deko/destinos.cpp b/src/x360/deko/destinos.cpp
+index 68358a2..838819f 100644
+--- a/src/x360/deko/destinos.cpp
++++ b/src/x360/deko/destinos.cpp
+@@ -55,6 +55,11 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_saltar_borrados_repetidos, true, "NFSMW",
+                     "Renderizador nativo (20/09 noche): saltarse un borrado cuando el destino ya esta borrado "
+                     "con ese mismo valor y no se ha dibujado nada desde entonces. No cambia ni un pixel; "
+                     "'borrados saltados' en el informe C2 dice cuantos se ahorran");
++REXCVAR_DEFINE_BOOL(nfsmw_dk_oclusion_directa, true, "Deko3d",
++                    "Occlusion results are read as soon as the GPU wrote them (the report's timestamp, zeroed when the "
++                    "query starts, is no longer 0), not when the whole frame's work has finished; and a game waiting "
++                    "for one gets a partial submit instead of the frame's work being closed. The game's render thread "
++                    "spun ~15% of its time on these results");
+ REXCVAR_DEFINE_BOOL(nfsmw_nativo_resolver_sin_copia, true, "NFSMW",
+                     "Renderizador nativo (17/09, build 154; por defecto desde la 161, medido en consola: -2,36 ms "
+                     "de los 7,41 de copias): al resolver un destino entero a una textura del mismo "
+@@ -183,6 +188,8 @@ DkImageView VistaCompleta(const DkImage& imagen) {
+ }
+ 
+ std::filesystem::path RutaCache() { return rex::filesystem::GetExecutableFolder() / "cache" / "nfsmw_dksh.bin"; }
++std::filesystem::path RutaInfo() { return rex::filesystem::GetExecutableFolder() / "cache" / "info_shaders.bin"; }
++constexpr uint32_t kMagiaInfo = 0x4F464E49;  // "INFO": RenderDk::info_guardada_
+ 
+ // ---- The output pass's shaders (GLSL for uam). The same work as the Vulkan path's nfsmw_salida_rampa_gamma.frag
+ // (see it for the reasons): a full-screen triangle, the source's texel, and the game's ramp.
+@@ -421,7 +428,10 @@ RenderDk::RenderDk(deko::ProveedorDeko3d& proveedor, rex::memory::Memory* memori
+   config.kb_previos = 512;
+   config.mb_codigo = 16;
+   config.mb_trozo_imagenes = 32;
+-  config.descriptores_imagen = 8192;
++  // One descriptor per texture view (texture x swizzle x view format). 8192 filled up in Singularity (~8,000 small
++  // textures alive, well under the cache's MB limit): from then on every new view got descriptor 0, the empty
++  // texture, and whatever was loaded next (a character, a note, a whole level) was drawn black. 32 bytes each.
++  config.descriptores_imagen = 32768;
+   config.descriptores_sampler = 1024;
+   nucleo_.Crear(proveedor_.dispositivo(), config);
+   nucleo_.al_atascarse = [this](uint64_t trabajo) { VolcarNovedades(trabajo); };
+@@ -507,6 +517,25 @@ RenderDk::RenderDk(deko::ProveedorDeko3d& proveedor, rex::memory::Memory* memori
+   if (!cache_.size()) {
+     REXLOG_WARN("[deko3d] sin cache de DKSH: cada shader se compila en la consola la primera vez que se usa");
+   }
++  if (std::FILE* f = std::fopen(RutaInfo().string().c_str(), "rb")) {
++    uint32_t cabecera[2] = {};
++    if (std::fread(cabecera, sizeof(cabecera), 1, f) == 1 && cabecera[0] == kMagiaInfo && cabecera[1] <= 200000) {
++      for (uint32_t i = 0; i < cabecera[1]; ++i) {
++        uint64_t clave = 0;
++        InfoShader info;
++        uint8_t listos = 0;
++        if (std::fread(&clave, 8, 1, f) != 1 || std::fread(&info.huella, 8, 1, f) != 1 ||
++            std::fread(&info.mascara, 4, 1, f) != 1 || std::fread(&info.interpoladores, 4, 1, f) != 1 ||
++            std::fread(&listos, 1, 1, f) != 1) {
++          break;
++        }
++        info.interpoladores_listos = listos != 0;
++        info_guardada_[clave] = info;
++      }
++    }
++    std::fclose(f);
++    REXLOG_INFO("[deko3d] {} shaders ya preparados en sesiones anteriores", info_guardada_.size());
++  }
+   cache_guardada_ns_ = deko::AhoraNs();
+ 
+   const deko::Compilador::Resultado vacio = compilador_.Compilar(false, "#version 460\nvoid main() {}\n");
+@@ -530,6 +559,7 @@ RenderDk::~RenderDk() {
+   }
+   nucleo_.EsperarGpu();
+   GuardarCacheSiHaceFalta(true);
++  GuardarInfoSiHaceFalta(true);
+   if (guardando_.joinable()) {
+     guardando_.join();
+   }
+@@ -692,7 +722,7 @@ void RenderDk::AntesDe3D() {
+ 
+ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32_t ancho, uint32_t alto,
+                         ImagenDk& destino, uint32_t dx, uint32_t dy, const int32_t* modos_signo, bool limitar_7e3,
+-                        float escala) {
++                        float escala, bool z_mas_cerca) {
+   const bool z = destino.profundidad;
+   limitar_7e3 = limitar_7e3 && !z && !modos_signo && fs_copia_7e3_valido_;
+   if (!vs_salida_valido_ || !(z ? fs_copia_profundidad_valido_ : fs_copia_color_valido_) ||
+@@ -758,7 +788,7 @@ bool RenderDk::Copiar3D(const ImagenDk& origen, uint32_t x0, uint32_t y0, uint32
+   dkDepthStencilStateDefaults(&ds);
+   ds.depthTestEnable = z;
+   ds.depthWriteEnable = z;
+-  ds.depthCompareOp = DkCompareOp_Always;
++  ds.depthCompareOp = z && z_mas_cerca ? DkCompareOp_Greater : DkCompareOp_Always;
+   ds.stencilTestEnable = false;
+   dkCmdBufBindRasterizerState(cmd, &rs);
+   dkCmdBufBindColorState(cmd, &cs);
+@@ -1405,17 +1435,20 @@ void RenderDk::BorrarProfundidad(const RegistrosCopia& reg, uint32_t pitch) {
+   SombraMinimoAntesDeBorrar(*profundidad);
+   profundidad->contenido_invalido = false;  // cleared: what a swap took away is no longer needed
+   const bool saltar_repetidos = REXCVAR_GET(nfsmw_nativo_saltar_borrados_repetidos);  // read each time: the game can switch it (ds2 safe mode)
++  // Bit 30 of RB_COPY_CONTROL, unused by the Xenos: a stencil-only clear asked for by the game's clear emulation
++  // (Direct3D's clear quad with depth writes off). Gears of War 2 clears the stencil after each light; clearing the
++  // depth with it wiped the scene's depth in the middle of the frame. A full clear still pending stays full.
++  const bool solo_estencil = (reg.rb_copy_control >> 30) & 0x1;
+   EstadoBorrado& previo = borrado_previo_[profundidad->serie];
+   if (saltar_repetidos && previo.dibujos == dibujados_ && previo.valor == reg.rb_depth_clear) {
+     ++borrados_saltados_;
+     return;
+   }
+-  previo = {reg.rb_depth_clear, dibujados_};
++  // Only a full clear is remembered as "the depth holds this value". A stencil-only one left the depth as it was: as
++  // remembered, Singularity's full depth clear right after it (same value, no draw between) was skipped as a repeat,
++  // the first-person weapon was drawn against the world's depth and world objects in front of it cut it away.
++  previo = solo_estencil ? EstadoBorrado{} : EstadoBorrado{reg.rb_depth_clear, dibujados_};
+   ++borrados_profundidad_;
+-  // Bit 30 of RB_COPY_CONTROL, unused by the Xenos: a stencil-only clear asked for by the game's clear emulation
+-  // (Direct3D's clear quad with depth writes off). Gears of War 2 clears the stencil after each light; clearing the
+-  // depth with it wiped the scene's depth in the middle of the frame. A full clear still pending stays full.
+-  const bool solo_estencil = (reg.rb_copy_control >> 30) & 0x1;
+   profundidad->borrado_solo_estencil =
+       solo_estencil && (!profundidad->borrado_pendiente || profundidad->borrado_solo_estencil);
+   if (solo_estencil && !profundidad->borrado_pendiente) {
+@@ -1663,7 +1696,40 @@ void RenderDk::CopiarProfundidad(const RegistrosCopia& reg, uint32_t pitch, bool
+   if (volcando_) {
+     VolcarResuelta(resuelta->imagen, base, resuelta->formato_guest);
+   }
++  // For FusionarProfundidadPosterior: which target went into which texture, and where.
++  ultima_z_info_ = info;
++  ultima_z_pitch_ = pitch;
++  ultima_z_textura_ = base;
++  ultima_z_rect_ = {uint32_t(x0), uint32_t(y0), ancho, alto, dx, dy};
++  ultima_z_valida_ = true;
++  OlvidarEstado();
++}
++
++bool RenderDk::FusionarProfundidadPosterior() {
++  if (!ultima_z_valida_) {
++    return false;
++  }
++  ultima_z_valida_ = false;  // once per resolve
++  ImagenDk* profundidad = DestinoProfundidad(ultima_z_info_ & 0xFFF, (ultima_z_info_ >> 16) & 0x1, ultima_z_pitch_);
++  const auto it = resueltas_.find(ultima_z_textura_);
++  if (!profundidad || it == resueltas_.end() || !it->second.imagen.profundidad || profundidad->contenido_invalido) {
++    return false;
++  }
++  Resuelta& resuelta = it->second;
++  const auto& r = ultima_z_rect_;
++  if (r[2] == 0 || r[3] == 0 || r[0] + r[2] > profundidad->ancho || r[1] + r[3] > profundidad->alto ||
++      r[4] + r[2] > resuelta.imagen.ancho || r[5] + r[3] > resuelta.imagen.alto) {
++    return false;
++  }
++  AsegurarTrabajo();
++  EmitirCieloPendiente();
++  HacerBorradoPendiente(*profundidad);  // a clear still pending is the target's real content
++  if (!Copiar3D(*profundidad, r[0], r[1], r[2], r[3], resuelta.imagen, r[4], r[5], nullptr, false, 1.0f, true)) {
++    return false;
++  }
++  ++resuelta.imagen.version;
+   OlvidarEstado();
++  return true;
+ }
+ 
+ // ---- nfsmw_nativo_sombra_minimo (the Vulkan backend's, nfsmw_nativo_destinos.cpp, with the same guards)
+@@ -2284,10 +2350,48 @@ bool RenderDk::Presentar(rex::ui::Presenter* presentador, const TexturaSwap& swa
+   CerrarFotogramaDeLaGuardiaDelCielo();
+   SoltarTexturasSiHaceFalta();
+   GuardarCacheSiHaceFalta(false);
++  GuardarInfoSiHaceFalta(false);
+   InformePeriodico();
+   return pintado;
+ }
+ 
++// ---- Each shader's info (InfoDe), kept for the next sessions
++
++void RenderDk::GuardarInfoSiHaceFalta(bool ya) {
++  const uint64_t ahora = deko::AhoraNs();
++  if (!info_sucia_ || (!ya && ahora - info_guardada_ns_ < 30'000'000'000ull)) {
++    return;
++  }
++  info_guardada_ns_ = ahora;
++  info_sucia_ = false;
++  std::error_code error;
++  std::filesystem::create_directories(RutaInfo().parent_path(), error);
++  const std::string temporal = RutaInfo().string() + ".tmp";
++  if (std::FILE* f = std::fopen(temporal.c_str(), "wb")) {
++    const uint32_t cabecera[2] = {kMagiaInfo, uint32_t(info_guardada_.size())};
++    bool ok = std::fwrite(cabecera, sizeof(cabecera), 1, f) == 1;
++    for (const auto& [clave, info] : info_guardada_) {
++      const uint8_t listos = info.interpoladores_listos ? 1 : 0;
++      ok = ok && std::fwrite(&clave, 8, 1, f) == 1 && std::fwrite(&info.huella, 8, 1, f) == 1 &&
++           std::fwrite(&info.mascara, 4, 1, f) == 1 && std::fwrite(&info.interpoladores, 4, 1, f) == 1 &&
++           std::fwrite(&listos, 1, 1, f) == 1;
++    }
++    ok = std::fclose(f) == 0 && ok;
++    if (ok) {
++      std::filesystem::rename(temporal, RutaInfo(), error);
++      if (error) {
++        std::filesystem::remove(RutaInfo(), error);
++        std::filesystem::rename(temporal, RutaInfo(), error);
++      }
++    }
++  }
++}
++
++void RenderDk::PrimerosUsos(uint64_t& lecturas, uint64_t& nanosegundos) const {
++  lecturas = cache_.lecturas();
++  nanosegundos = cache_.lecturas_ns() + info_ns_.load(std::memory_order_relaxed);
++}
++
+ // ---- The DKSH cache file and the report
+ 
+ void RenderDk::GuardarCacheSiHaceFalta(bool ya) {
+@@ -2394,6 +2498,11 @@ void RenderDk::InformePeriodico() {
+     for (size_t i = 0; i < lista.size() && i < 8; ++i) texto += fmt::format(" causa {}: {}", lista[i].second, lista[i].first);
+     if (!texto.empty()) X360_INFORME("[deko3d] rechazos por causa (total):{}", texto);
+   }
++  X360_INFORME("[deko3d] oclusion: {} resultados leidos antes de terminar su trabajo (en total, "
++               "nfsmw_dk_oclusion_directa)", oclusion_directas_);
++  X360_INFORME("[deko3d] descriptores de imagen: {} en uso de {} ({} vistas)",
++               siguiente_descriptor_ - uint32_t(descriptores_libres_.size()), nucleo_.config().descriptores_imagen,
++               vistas_.size());
+   X360_INFORME(
+       "[deko3d] ultimos {:.0f} s: {:.1f} fotogramas/s, {:.0f} dibujos por fotograma ({} rechazados en total); GPU "
+       "{:.2f} ms por fotograma ({} trabajos medidos); por fotograma: {:.1f} copias, {:.1f} borrados, {:.1f} barreras de transferencia, {:.2f} MB de subida (vertices, "
+@@ -2647,6 +2756,10 @@ void RenderDk::EmpezarOclusion(uint32_t base) {
+   c.par = oclusion_siguiente_;
+   c.dibujados = dibujados_;
+   oclusion_siguiente_ = (oclusion_siguiente_ + 1) % kParesOclusion;
++  // nfsmw_dk_oclusion_directa: both reports' timestamps at 0, so a written report can be told from an old one. The
++  // slot is free (its last pair was read), and the zeros reach memory before this work is submitted.
++  std::memset(oclusion_cpu_ + size_t(c.par) * 32, 0, 32);
++  dkMemBlockFlushCpuCache(oclusion_bloque_, c.par * 32, 32);
+   dkCmdBufReportCounter(nucleo_.comandos(), DkCounter_SamplesPassed, oclusion_gpu_ + uint64_t(c.par) * 32);
+   oclusion_abiertas_[base] = c;
+ }
+@@ -2686,6 +2799,16 @@ bool RenderDk::ResultadoOclusion(uint64_t ticket, uint64_t& muestras) {
+ 
+ void RenderDk::EnviarOclusiones() {
+   if (nucleo_.TrabajoAbierto() && !oclusion_pendientes_.empty() && oclusion_pendientes_.back().trabajo == trabajo_) {
++    if (REXCVAR_GET(nfsmw_dk_oclusion_directa)) {
++      // What is recorded goes to the GPU; the reports are read as it writes them (LeerOclusionesTerminadas).
++      if (oclusion_envio_parcial_ != dibujados_) {
++        oclusion_envio_parcial_ = dibujados_;
++        nucleo_.EnviarParcial();
++        OlvidarEstado();
++        g_.pase_valido = false;
++      }
++      return;
++    }
+     CerrarTrabajo();  // the next draw opens another
+   }
+ }
+@@ -2694,7 +2817,18 @@ void RenderDk::LeerOclusionesTerminadas() {
+   while (!oclusion_pendientes_.empty()) {
+     const ConsultaDk& c = oclusion_pendientes_.front();
+     if ((nucleo_.TrabajoAbierto() && c.trabajo == trabajo_) || !nucleo_.TrabajoTerminado(c.trabajo)) {
+-      break;
++      // Not finished as a whole: its two reports may be written already (a partial submit got that far).
++      if (!REXCVAR_GET(nfsmw_dk_oclusion_directa)) {
++        break;
++      }
++      dkMemBlockFlushCpuCache(oclusion_bloque_, c.par * 32, 32);
++      uint64_t sello_inicio = 0, sello_fin = 0;
++      std::memcpy(&sello_inicio, oclusion_cpu_ + size_t(c.par) * 32 + 8, 8);
++      std::memcpy(&sello_fin, oclusion_cpu_ + size_t(c.par) * 32 + 24, 8);
++      if (!sello_inicio || !sello_fin) {
++        break;  // in order: the later ones are not written either
++      }
++      ++oclusion_directas_;
+     }
+     dkMemBlockFlushCpuCache(oclusion_bloque_, c.par * 32, 32);
+     uint64_t inicio = 0, fin = 0;
+@@ -2866,8 +3000,10 @@ void RenderDk::TerminarVolcado() {
+           std::memcpy(&t[1], datos + i * 8 + 4, 4);
+           break;
+         case DkImageFormat_Z24S8:
+-          t[0] = float(v & 0xFFFFFF);  // normalized below by the image's range
+-          t[3] = float(v >> 24) / 255.0f;
++          // deko3d's Z24S8 keeps the depth in the upper 24 bits and the stencil in the lower 8 (read as the lower 24
++          // bits, a smooth floor came out as a sawtooth).
++          t[0] = float(v >> 8);  // normalized below by the image's range
++          t[3] = float(v & 0xFF) / 255.0f;
+           break;
+         default:
+           break;
+diff --git a/src/x360/deko/dibujos.cpp b/src/x360/deko/dibujos.cpp
+index e09d8b3..cabb2dc 100644
+--- a/src/x360/deko/dibujos.cpp
++++ b/src/x360/deko/dibujos.cpp
+@@ -65,6 +65,9 @@ REXCVAR_DEFINE_INT32(nfsmw_dk_envio_parcial, 256, "NFSMW",
+                      "que la GPU dibuje mientras la CPU sigue grabando. 0 = un solo envio por fotograma, como antes "
+                      "(Gears of War 2: la GPU esperaba 9-18 ms por fotograma a que se cerrara el trabajo)")
+     .range(0, 100000);
++REXCVAR_DEFINE_BOOL(nfsmw_dk_manuales_en_cache, true, "NFSMW",
++                    "deko3d: los bufers de vertices que lee el propio shader se guardan como los demas (entre "
++                    "fotogramas y dentro de un trabajo) en vez de copiarse enteros en cada dibujo");
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_todas_las_salidas, false, "NFSMW",
+                     "deko3d (depuracion): los vertex shaders siempre con todos sus interpoladores, no solo los que lee "
+                     "el pixel shader");
+@@ -93,6 +96,12 @@ REXCVAR_DECLARE(bool, nfsmw_dk_perfil_barrera);
+ REXCVAR_DECLARE(bool, nfsmw_dk_perfil_variantes);
+ REXCVAR_DECLARE(bool, nfsmw_nativo_ps_solo_alfa);
+ // deko3d only.
++REXCVAR_DEFINE_BOOL(nfsmw_dk_compilar_variantes, true, "Deko3d",
++                    "With nfsmw_dk_compilar_en_fondo: a shader variant missing from the DKSH cache is compiled on the "
++                    "worker. false = never: the general variant (every interpolator; the library pixel shader) keeps "
++                    "drawing it, the same image. In Singularity one vertex shader compiled for 30+ s on a game core "
++                    "and the sound crackled meanwhile. Still logged, for tools/switch/shaders/dksh_variants.py")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_compilar_en_fondo, true, "NFSMW",
+                     "deko3d: la variante exacta de un vertex shader que no esta en la cache se compila en segundo "
+                     "plano; mientras, dibuja la que conserva todos los interpoladores. false = se compila en el acto")
+@@ -890,6 +899,23 @@ void RenderDk::CerrarFotogramaDeLaGuardiaDelCielo() {
+ 
+ RenderDk::InfoShader& RenderDk::InfoDe(const EntradaShader& entrada) {
+   InfoShader& info = info_shaders_[&entrada];
++  if (info.huella && (entrada.vertices || info.interpoladores_listos)) {
++    return info;
++  }
++  // Prepared in an earlier session: the same container gives the same SPIR-V, so the same results.
++  if (entrada.huella_contenedor) {
++    if (const auto it = info_guardada_.find(entrada.huella_contenedor);
++        it != info_guardada_.end() && it->second.huella && (entrada.vertices || it->second.interpoladores_listos)) {
++      info = it->second;
++      return info;
++    }
++  }
++  const uint64_t inicio_info = deko::AhoraNs();
++  struct Medir {
++    std::atomic<uint64_t>& ns;
++    uint64_t inicio;
++    ~Medir() { ns.fetch_add(deko::AhoraNs() - inicio, std::memory_order_relaxed); }
++  } medir{info_ns_, inicio_info};
+   if (!info.huella) {
+     const auto& espirv = entrada.spirv;
+     info.huella = deko::HuellaSpirv(espirv);
+@@ -900,6 +926,10 @@ RenderDk::InfoShader& RenderDk::InfoDe(const EntradaShader& entrada) {
+     info.interpoladores = deko::SpirvAGlsl(entrada.spirv, 0).interpoladores;
+     info.interpoladores_listos = true;
+   }
++  if (entrada.huella_contenedor && info.huella && !entrada.spirv.empty()) {
++    info_guardada_[entrada.huella_contenedor] = info;
++    info_sucia_ = true;
++  }
+   return info;
+ }
+ 
+@@ -953,7 +983,10 @@ const DkShader* RenderDk::ShaderDe(const EntradaShader& entrada, uint32_t especi
+   };
+   if (const std::vector<uint8_t>* dksh = cache_.Buscar(clave_cache)) {
+     ++aciertos_cache_;
+-    return cargar(*dksh);
++    const uint64_t inicio_carga = deko::AhoraNs();
++    const DkShader* cargado = cargar(*dksh);
++    info_ns_.fetch_add(deko::AhoraNs() - inicio_carga, std::memory_order_relaxed);  // a first-time cost too
++    return cargado;
+   }
+   static const bool en_fondo = REXCVAR_GET(nfsmw_dk_compilar_en_fondo);
+   if (entrada.vertices && variante != kTodasLasSalidas && en_fondo &&
+@@ -964,7 +997,8 @@ const DkShader* RenderDk::ShaderDe(const EntradaShader& entrada, uint32_t especi
+     if (en_fondo_.emplace(h, true).second) {
+       // Each one logged (once per session): the variants the PC tool's cache lacks, to add them there.
+       REXLOG_INFO("[deko3d] {} no esta en la cache: se compila en segundo plano (huella {:016X})", nombre, info.huella);
+-      const deko::GlslDeko g = deko::SpirvAGlsl(entrada.spirv, espec, variante);
++      static const bool compilar = REXCVAR_GET(nfsmw_dk_compilar_variantes);
++      const deko::GlslDeko g = compilar ? deko::SpirvAGlsl(entrada.spirv, espec, variante) : deko::GlslDeko{};
+       if (!g.glsl.empty()) {
+         std::weak_ptr<Bandeja> bandeja = bandeja_;
+         compilador_.Encolar(true, g.glsl, [bandeja, clave_cache](deko::Compilador::Resultado r) {
+@@ -987,7 +1021,8 @@ const DkShader* RenderDk::ShaderDe(const EntradaShader& entrada, uint32_t especi
+     const uint64_t h = XXH3_64bits(&clave_cache, sizeof(clave_cache));
+     if (en_fondo_.emplace(h, true).second) {
+       REXLOG_INFO("[deko3d] {} no esta en la cache: se compila en segundo plano (huella {:016X})", nombre, info.huella);
+-      deko::GlslDeko g = deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas);
++      static const bool compilar = REXCVAR_GET(nfsmw_dk_compilar_variantes);
++      deko::GlslDeko g = compilar ? deko::SpirvAGlsl(espirv, espec, kTodasLasSalidas) : deko::GlslDeko{};
+       if (!g.glsl.empty()) {
+         if (variante_ps & kVarianteZTemprana) {
+           DeclararZTemprana(g.glsl);
+@@ -1973,13 +2008,38 @@ bool RenderDk::Dibujar(const PeticionDibujo& p) {
+           direccion + bytes > kMemoriaFisica) {
+         return Rechazar(27, "bufer de vertices leido por el shader invalido o demasiado grande");
+       }
+-      const deko::Subida s = nucleo_.Reservar(bytes, 16);
+-      if (!s) {
+-        return Rechazar(13, "sin sitio en el anillo de subida");
++      // Kept like the vertex streams: across frames in the geometry store and within a work by the dedupe. Copied
++      // whole for every draw, a buffer the shader reads itself (up to 8 MB) went into the upload slot each time.
++      const uint8_t* datos = memoria_->TranslatePhysical(uint32_t(direccion));
++      const xenos::Endian orden_manual = static_cast<xenos::Endian>(d1 & 0x3);
++      DkGpuAddr gpu = 0;
++      if (REXCVAR_GET(nfsmw_dk_manuales_en_cache) && geometria_.activo()) {
++        const deko::AlmacenGeometria::Resultado en_almacen = geometria_.Buscar(
++            datos, bytes, uint64_t(orden_manual) | (uint64_t(1) << 61), bytes,
++            [&](uint8_t* destino, uint32_t&, uint32_t&) {
++              CopiarVertices(TrabajoCopia{datos, destino, bytes / 4, orden_manual});
++            });
++        if (en_almacen.gpu) {
++          geometria_.Usar(en_almacen.entrada, trabajo_);
++          gpu = en_almacen.gpu;
++        }
++      }
++      const uint32_t orden_dedupe = uint32_t(orden_manual) | 0x200u;
++      uint64_t ya = 0;
++      if (!gpu && REXCVAR_GET(nfsmw_dk_manuales_en_cache) &&
++          dedupe_.Buscar(uint64_t(reinterpret_cast<uintptr_t>(datos)), bytes, orden_dedupe, ya)) {
++        gpu = DkGpuAddr(ya);
++      }
++      if (!gpu) {
++        const deko::Subida s = nucleo_.Reservar(bytes, 16);
++        if (!s) {
++          return Rechazar(13, "sin sitio en el anillo de subida");
++        }
++        CopiarVertices(TrabajoCopia{datos, s.cpu, bytes / 4, orden_manual});
++        dedupe_.Anotar(uint64_t(reinterpret_cast<uintptr_t>(datos)), bytes, orden_dedupe, uint64_t(s.gpu));
++        gpu = s.gpu;
+       }
+-      CopiarVertices(TrabajoCopia{memoria_->TranslatePhysical(uint32_t(direccion)), s.cpu, bytes / 4,
+-                                  static_cast<xenos::Endian>(d1 & 0x3)});
+-      dkCmdBufBindStorageBuffer(cmd, DkStage_Vertex, uint32_t(b), s.gpu, bytes);
++      dkCmdBufBindStorageBuffer(cmd, DkStage_Vertex, uint32_t(b), gpu, bytes);
+     }
+     const deko::Subida descriptores = nucleo_.Reservar(256, DK_UNIFORM_BUF_ALIGNMENT);
+     if (!descriptores) {
+diff --git a/src/x360/deko/texturas.cpp b/src/x360/deko/texturas.cpp
+index f64ff8a..91be6d8 100644
+--- a/src/x360/deko/texturas.cpp
++++ b/src/x360/deko/texturas.cpp
+@@ -22,6 +22,10 @@
+ #include <rex/x360/deko/render.h>
+ #include <rex/x360/xenos.h>
+ 
++REXCVAR_DEFINE_BOOL(nfsmw_dk_texturas_lineales_siempre, true, "Deko3d",
++                    "Linear (untiled) textures, the ones a game writes at run time, are checked for changes every frame "
++                    "instead of at a growing interval (up to 32 frames): text glyphs written when first needed showed "
++                    "blank for up to ~1.3 s");
+ REXCVAR_DEFINE_BOOL(nfsmw_dk_16_16_fijo, false, "NFSMW",
+                     "deko3d: un destino k_16_16 (coma fija, -32..32) leido como textura k_16_16 da los bits como entero "
+                     "normalizado (o el valor / 32 con signo) en vez del valor tal cual. Apagado: Gears of War 2 lee su "
+@@ -897,8 +901,15 @@ uint32_t RenderDk::PrepararTextura(const uint32_t* f, uint16_t tipo_shader, uint
+     const uint64_t extension = (capas - 1) * zancada_cara + extension_capa;
+     if (dir_base + extension <= kMemoriaFisica) {
+       // At the maximum interval, from 32 to 39 depending on the texture, so they do not coincide.
++      // nfsmw_dk_texturas_lineales_siempre: a linear (untiled) texture is one the game writes at run time (cooked
++      // assets are tiled): checked every frame. Singularity's Scaleform glyph atlas (k_8 1024x1024, the only linear
++      // texture of a frame) got a letter written when first needed; checked every 32-39 frames, the new letters
++      // stayed blank for up to ~1.3 s.
++      static const bool lineales_siempre = REXCVAR_GET(nfsmw_dk_texturas_lineales_siempre);
+       auto sin_cambios = [&] {
+-        textura.intervalo = textura.nivel_vacio ? 1 : std::min<uint32_t>(textura.intervalo * 2, 32);
++        textura.intervalo = textura.nivel_vacio || (lineales_siempre && !mosaico)
++                                ? 1
++                                : std::min<uint32_t>(textura.intervalo * 2, 32);
+         textura.siguiente = fotograma_ + textura.intervalo + (textura.intervalo == 32 ? (clave >> 7) & 7 : 0);
+         return listo();
+       };
+@@ -1126,10 +1137,20 @@ uint32_t RenderDk::PrepararTextura(const uint32_t* f, uint16_t tipo_shader, uint
+ // addresses: without a limit the cache grew ~20 MB every 40 s of racing (docs/native-renderer.md).
+ void RenderDk::SoltarTexturasSiHaceFalta() {
+   const uint64_t limite = uint64_t(REXCVAR_GET(nfsmw_nativo_texturas_mb_max)) << 20;
+-  if (bytes_texturas_ <= limite) {
++  // The descriptor table is a limit of its own: many small textures fill it long before the MB limit (a full table
++  // gives every new view the empty texture). Above three quarters of it, every texture unused for
++  // kFotogramasSinUsoParaSoltar frames is released, at most once per that many frames (the freed descriptors come
++  // back as their slots' fences pass).
++  const uint32_t descriptores_usados = siguiente_descriptor_ - uint32_t(descriptores_libres_.size());
++  const bool por_descriptores = descriptores_usados > nucleo_.config().descriptores_imagen / 4 * 3 &&
++                                fotograma_ >= suelta_por_descriptores_ + kFotogramasSinUsoParaSoltar;
++  if (bytes_texturas_ <= limite && !por_descriptores) {
+     return;
+   }
+-  const uint64_t objetivo = limite / 4 * 3;
++  if (por_descriptores) {
++    suelta_por_descriptores_ = fotograma_;
++  }
++  const uint64_t objetivo = por_descriptores ? 0 : limite / 4 * 3;
+   uint64_t soltadas = 0, bytes = 0;
+   for (auto it = texturas_.begin(); it != texturas_.end() && bytes_texturas_ > objetivo;) {
+     TexturaDk& t = it->second;
+@@ -1145,8 +1166,9 @@ void RenderDk::SoltarTexturasSiHaceFalta() {
+   }
+   if (soltadas) {
+     ++generacion_texturas_;  // the per-fetch cache may name them
+-    REXLOG_INFO("[deko3d] texturas: {} soltadas ({} MB); quedan {} ({} MB)", soltadas, bytes >> 20, texturas_.size(),
+-                bytes_texturas_ >> 20);
++    REXLOG_INFO("[deko3d] texturas: {} soltadas ({} MB){}; quedan {} ({} MB), {} descriptores en uso de {}", soltadas,
++                bytes >> 20, por_descriptores ? " por la tabla de descriptores" : "", texturas_.size(),
++                bytes_texturas_ >> 20, descriptores_usados, nucleo_.config().descriptores_imagen);
+   }
+ }
+ 

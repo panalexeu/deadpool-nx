@@ -15,10 +15,7 @@ Requirements: a Switch with Atmosphere running homebrew in title takeover mode (
 git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from the Vulkan SDK.
 
 1. Clone and set up the SDKs: rexglue-sdk-nx pinned to `f961303` in `thirdparty/rexglue-sdk-nx` plus
-   `patches/rexglue-sdk-nx/` (singularity-nx's 16 patches plus `0017` DKSH cache entries up to 8 MiB, `0018` interpolators linked
-   by register as on the Xbox 360, `0019` queue scratch for spilling shaders, `0020` remapped pixel shaders listed for
-   the PC cache, `0021` `invariant gl_Position` in every vertex shader and `0022` the profiler's raw samples, frame
-   times and CPU per core, `0023` the geometry cache swept a slice per frame, `0024` no SD work on the ring thread mid-frame, `0025` remapped pixel shaders patched instead of compiled, `0026` missing variants' fallback remembered, `0027` ring maps on a node pool, `0028` XMA sweep and NEON sample conversion), upstream rexglue-sdk `v0.10.0` in
+   `patches/rexglue-sdk-nx/` applied in order (listed under **SDK patches** below), upstream rexglue-sdk `v0.10.0` in
    `thirdparty/rexglue-sdk` (its `rexglue` codegen tool), and the Docker image with the Switch toolchain:
 
    ```bash
@@ -58,9 +55,32 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
 Known shader issue: the vertex shaders `vs_185367fe72f7ab08` and `vs_e1511ae81967229d` do not compile for the Switch
 GPU (uam: "array index must be < 16"), so their draws are skipped; the other 12,982 have every DKSH variant.
 
+### SDK patches
+
+`patches/rexglue-sdk-nx/`, applied in order on rexglue-sdk-nx `f961303` (`git apply`):
+
+| Patch | What it does |
+|---|---|
+| `0001` | gears2-nx's SDK patches 0001-0049, merged: Unreal Engine 3 on deko3d |
+| `0002` | singularity-nx's SDK patches 0002-0016, merged: occlusion results, background shader compiler, texture and depth fixes, thread cores, shader info cache |
+| `0003` | DKSH cache entries up to 8 MiB |
+| `0004` | interpolators linked by register, as on the Xbox 360 |
+| `0005` | queue scratch for shaders that spill; larger ones are refused |
+| `0006` | remapped pixel shaders listed for the PC cache |
+| `0007` | `invariant gl_Position` in every vertex shader, so depth-equal passes cover the same pixels |
+| `0008` | profiler raw samples: frame times, per-core CPU, stack samples (`deadpool_perfil`) |
+| `0009` | the geometry cache swept a slice per frame |
+| `0010` | no SD work on the GPU ring thread; the profiler report runs below the game |
+| `0011` | remapped pixel shaders patched in their DKSH binary instead of compiled on the console |
+| `0012` | a missing variant's fallback remembered |
+| `0013` | the ring thread's maps take their nodes from a pool |
+| `0014` | XMA sweeps only allocated contexts; NEON sample conversion |
+| `0015` | guest threads placed on the core of their Xbox hardware thread |
+| `0016` | the frame dump can skip a frame's first N copies (`nfsmw_dk_volcado_saltar`) |
+
 ### Changes from singularity-nx
 
-Same as there: the rexglue-sdk-nx patches `0001`-`0016`, the ARM fixes (switch traps, memory barriers, spin hints)
+Same as there: the rexglue-sdk-nx patches `0001`-`0002` (gears2-nx's and singularity-nx's, merged), the ARM fixes (switch traps, memory barriers, spin hints)
 and gears2-nx's CPU passes (leaf prologue, stack access, inline calls, guest registers in host locals), the CPU clock
 thread, the guards. Game-specific parts, with Deadpool's addresses found by matching Singularity's functions
 instruction by instruction in the generated code:
@@ -97,7 +117,7 @@ what threads wait on in the kernel, and what each thread did during the frames o
   - **The world drawn:** the depth prepass gets the right slope bias.
   - **Bink movies:** their Y/U/V shaders were captured and added to the library.
   - **No black scene under the HUD:** Direct3D's clears now write the clear rectangle's vertex colour, where they used to write a stale PS c0 or 0, so the UI layer's alpha is 1 again.
-  - **Remapped pixel shaders:** patched in their DKSH binary instead of compiled on the console (SDK `0025`).
+  - **Remapped pixel shaders:** patched in their DKSH binary instead of compiled on the console (SDK `0011`).
 - Performance:
   - **No SD writes on the GPU ring thread:** logs, remap lists and profiler reports are buffered and written in the background, which removes the periodic stalls.
   - **Ring thread, about 12 → 8 µs per draw:** node pools for its maps, the geometry cache swept a slice per frame, and the missing-variant fallback remembered.
