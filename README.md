@@ -85,9 +85,6 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
    `cache/` folder there) and your `deadpool-extract/` folder. Launch the NRO from the homebrew menu in title takeover
    mode; logs go to `logs/` next to it.
 
-Known shader issue: the vertex shaders `vs_185367fe72f7ab08` and `vs_e1511ae81967229d` do not compile for the Switch
-GPU (uam: "array index must be < 16"), so their draws are skipped; the other 12,982 have every DKSH variant.
-
 ### SDK patches
 
 `patches/rexglue-sdk-nx/`, applied in order on rexglue-sdk-nx `f961303` (`git apply`):
