@@ -53,7 +53,25 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
    tools/switch/build-native.sh
    ```
 
-6. Copy to `sdmc:/switch/deadpool/`: `out/build/switch-native/deadpool.nro`, `switch/deadpool.toml`,
+6. Recommended: lighter engine settings in the game's own config, for the fights. In the heaviest late-level fight
+   (same fight, 540p, PGO build) the worst second went from 20 to 23 fps, the 1 % low from 15 to about 20 fps, and
+   the seconds under 25 fps from 10 % to 4 %. The cost: no dynamic shadows, cheaper particle effects and character
+   meshes, less debris. The config (`Coalesced.ini`) is XOR-obfuscated; `tools/switch/coalesced_ini.py` decodes,
+   edits and re-encodes it (`decode` / `encode` / `set`), and the game loads the edited file as is:
+
+   ```bash
+   C=deadpool-extract/TransGame/Config/Xenon/Cooked/Coalesced.ini
+   cp $C $C.orig
+   python3 tools/switch/coalesced_ini.py set $C.orig $C \
+     'Xe-TransEngine.ini:[SystemSettings]:LightEnvironmentShadows=False' \
+     'Xe-TransEngine.ini:[SystemSettings]:DynamicShadows=False' \
+     'Xe-TransEngine.ini:[SystemSettings]:SkeletalMeshLODBias=1' \
+     'Xe-TransEngine.ini:[SystemSettings]:ParticleLODBias=1' \
+     'Xe-TransGame.ini:[HM_Engine.HmDebrisPool]:_MaxActiveDebris=20' \
+     'Xe-TransGame.ini:[HM_Engine.HmDebrisPool]:_MaxDebrisSpawnsPerFrame=2'
+   ```
+
+7. Copy to `sdmc:/switch/deadpool/`: `out/build/switch-native/deadpool.nro`, `switch/deadpool.toml`,
    `out/shaders/deadpool_shaders.dslib`, `out/shaders/shadercache_dksh.bin`, `out/shaders/info_shaders.bin` (into a
    `cache/` folder there) and your `deadpool-extract/` folder. Launch the NRO from the homebrew menu in title takeover
    mode; logs go to `logs/` next to it.
@@ -137,7 +155,7 @@ what threads wait on in the kernel, and what each thread did during the frames o
 
 ### Known issues
 
-- Performance is poor: fight scenes drop to about 18 fps, and the heaviest late levels run at about 21-27 fps,
+- Performance is poor without the lighter config (step 6): fight scenes drop to about 18 fps, and the heaviest late levels run at about 21-27 fps,
   limited by the CPU (about 280 % of the 300 % available).
 - Rendering issues may remain in parts of the game not yet tested.
 
