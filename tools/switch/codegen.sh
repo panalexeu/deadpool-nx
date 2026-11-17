@@ -68,6 +68,8 @@ echo "== guest stack accesses without volatile"
 (cd "$out" && python3 "$fixes/patch_stack_access.py" generated/default/*.cpp) | tail -1
 echo "== inlinable calls"
 (cd "$out" && python3 "$fixes/patch_inline_calls.py" "${srcs[@]}" -- generated/default/deadpool_recomp.*.cpp) | tail -1 | cut -c1-200
+# The tree before the register pass, kept so the pass can be re-run alone (tools/switch/localregs.sh).
+rm -rf "$out/prelocal" && cp -a "$gen" "$out/prelocal"
 if [ "${LOCALREGS:-1}" = 1 ]; then
   echo "== guest registers in host locals"
   (cd "$out" && PLR_MAP="$out/patch_local_regs.check.map" python3 "$fixes/patch_local_regs.py" \
