@@ -39,6 +39,9 @@
 #include "deadpool_gpu.h"
 
 REXCVAR_DECLARE(int32_t, deadpool_resolution);
+#if defined(__SWITCH__)
+extern "C" const char* RexCodeBlocksStatus(void);
+#endif
 
 REXCVAR_DEFINE_STRING(deadpool_game, "", "Deadpool",
                       "Game folder (default.xex and TransGame/). Empty: deadpool-extract/ next to the executable.");
@@ -93,6 +96,9 @@ class DeadpoolApp : public rex::ReXApp {
   }
 
   void OnPostInitLogging() override {
+#if defined(__SWITCH__)
+    REXLOG_INFO("{}", RexCodeBlocksStatus());  // SDK switch_code_blocks.cpp: the code on 2 MB blocks, or why not
+#endif
     deadpool::cpu::InformarSistema();
     deadpool::pgo::Start();  // PGO=generate builds only: the profile counts to pgo/ (deadpool_pgo.cpp)
   }

@@ -103,6 +103,7 @@ GPU (uam: "array index must be < 16"), so their draws are skipped; the other 12,
 | `0014` | XMA sweeps only allocated contexts; NEON sample conversion |
 | `0015` | guest threads placed on the core of their Xbox hardware thread |
 | `0016` | the frame dump can skip a frame's first N copies (`nfsmw_dk_volcado_saltar`) |
+| `0017` | game memory and the NRO's code on 2 MB blocks (from sa2-nx 1.0.6; about 86 MB more memory; `deadpool_code_blocks = false` turns the code move off) |
 
 ### Changes from singularity-nx
 
@@ -150,6 +151,8 @@ what threads wait on in the kernel, and what each thread did during the frames o
   - **XMA:** only allocated contexts are swept, and frames are converted with NEON.
   - **Native code:** the hot copy, fill and D3D constant-copy functions, and the game's LZX decompression (libmspack).
   - **Thread placement:** guest threads go to the core of their Xbox hardware thread.
+  - **2 MB pages** for the game's memory and code (SDK `0017`): in the same fight the worst second went from 23 to
+    25 fps.
   - **PGO** (`PGO=generate` / `PGO=use` in `build-native.sh`, `tools/switch/pgo_merge.sh`): about +10 % fps in the heaviest late level (24.6 → 27.0 fps), which is CPU-bound.
 - Tools:
   - the profiler (`deadpool_perfil`, `perf_report.py`);
