@@ -120,8 +120,10 @@ class DeadpoolApp : public rex::ReXApp {
     // back buffer are sized from it, the scene from game patch 3 (deadpool_game_patches.cpp).
     if (const int alto = REXCVAR_GET(deadpool_resolution); alto == 540 || alto == 360) {
       const int ancho = alto * 16 / 9;  // 960 or 640
-      REXCVAR_SET(video_mode_width, ancho);
-      REXCVAR_SET(video_mode_height, alto);
+      // The video mode stays 960x540 for 360p: sub_829D6808 takes a 640-wide mode for 640x480 and makes the scene
+      // 832x624 (4:3, as many pixels as 540p). With a 960x540 mode it keeps 16:9 and game patch 3 gives 640x360.
+      REXCVAR_SET(video_mode_width, 960);
+      REXCVAR_SET(video_mode_height, 540);
       // The renderer tells the scene from other targets by its width (GPU time categories, the deferred sky).
       rex::x360::g_ancho_escena.store(ancho, std::memory_order_relaxed);
     }
