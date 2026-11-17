@@ -7,9 +7,10 @@
 Nintendo Switch port of the Xbox 360 version of Deadpool (2013), built by static recompilation with rexglue-sdk and
 drawn by a native deko3d renderer.
 
-> **Status:** alpha, playable. With the lighter engine config (step 6), the heaviest late-level fight holds about
-> 29 fps on average (the game caps at 30), with the worst second at 24-25 fps; without it, fights drop to about
-> 18 fps. Some rendering issues may remain.
+> **Status:** alpha, playable. The game holds a steady 30 fps (its own cap), with occasional drops to about 20 fps in
+> big fights; before the CPU optimisations and the lighter engine config (step 6) it was much worse. There is
+> little room left for improvement. The game has not been played from start to end yet, so expect rendering issues
+> in places.
 
 It reuses the Unreal Engine 3 on Switch stack of [singularity-nx](https://github.com/panalexeu/singularity-nx)
 (itself from [gears2-nx](https://github.com/VasilkovND/gears2-nx)), adapted to Deadpool. The PC version is
@@ -183,7 +184,7 @@ what threads wait on in the kernel, and what each thread did during the frames o
 - Fights are limited by the game's main thread (game logic and actor updates, about 80-90 % of a core in the
   heaviest fight; the HUD's Scaleform scripts are about 14 % of it). Without the lighter config (step 6) they drop to
   about 18 fps.
-- Rendering issues may remain in parts of the game not yet tested.
+- Rendering issues may show up throughout the game: it has not been played from start to end yet.
 
 ### License
 
