@@ -1,8 +1,13 @@
+<div align=center>
+<img src="imgs/theme.jpg" alt="deadpool" width="100%">
+</div>
+
+---
+
 Nintendo Switch port of the Xbox 360 version of Deadpool (2013), built by static recompilation with rexglue-sdk and
 drawn by a native deko3d renderer.
 
-> **Status:** work in progress. The NRO, the shader library and its DKSH cache build; it has not been run on a console
-> yet.
+> **Status:** work in progress. The NRO, the shader library and its DKSH cache build;
 
 It reuses the Unreal Engine 3 on Switch stack of [singularity-nx](https://github.com/panalexeu/singularity-nx)
 (itself from [gears2-nx](https://github.com/VasilkovND/gears2-nx)), adapted to Deadpool. The PC version is
