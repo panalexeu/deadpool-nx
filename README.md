@@ -56,7 +56,7 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
    mode; logs go to `logs/` next to it.
 
 Known shader issue: the vertex shaders `vs_185367fe72f7ab08` and `vs_e1511ae81967229d` do not compile for the Switch
-GPU (uam: "array index must be < 16"), so their draws are skipped; the other 12,980 have every DKSH variant.
+GPU (uam: "array index must be < 16"), so their draws are skipped; the other 12,982 have every DKSH variant.
 
 ### Changes from singularity-nx
 
@@ -90,12 +90,28 @@ It reports the frame-time distribution, a verdict per 10 s (GPU-bound, CPU-bound
 load of each core, the functions that spend each thread's CPU (self and inclusive, game functions as `sub_8XXXXXXX`),
 what threads wait on in the kernel, and what each thread did during the frames over 50 ms.
 
+### What works so far
+
+- The whole game runs at 540p on the Switch.
+- Rendering fixes:
+  - **The world drawn:** the depth prepass gets the right slope bias.
+  - **Bink movies:** their Y/U/V shaders were captured and added to the library.
+  - **No black scene under the HUD:** Direct3D's clears now write the clear rectangle's vertex colour, where they used to write a stale PS c0 or 0, so the UI layer's alpha is 1 again.
+  - **Remapped pixel shaders:** patched in their DKSH binary instead of compiled on the console (SDK `0025`).
+- Performance:
+  - **No SD writes on the GPU ring thread:** logs, remap lists and profiler reports are buffered and written in the background, which removes the periodic stalls.
+  - **Ring thread, about 12 → 8 µs per draw:** node pools for its maps, the geometry cache swept a slice per frame, and the missing-variant fallback remembered.
+  - **XMA:** only allocated contexts are swept, and frames are converted with NEON.
+  - **Native code:** the hot copy, fill and D3D constant-copy functions, and the game's LZX decompression (libmspack).
+  - **Thread placement:** guest threads go to the core of their Xbox hardware thread.
+  - **PGO** (`PGO=generate` / `PGO=use` in `build-native.sh`, `tools/switch/pgo_merge.sh`): about +10 % fps in the heaviest late level (24.6 → 27.0 fps), which is CPU-bound.
+- Tools:
+  - the profiler (`deadpool_perfil`, `perf_report.py`);
+  - frame dumps (`nfsmw_dk_volcado_saltar` skips a frame's first N copies).
+
 ### Known issues
 
-- Bink movies are black: their YUV shaders are not in the shader library, and the renderer takes their draws for
-  clears.
-- The register-linked interpolators (SDK `0018`) compile their remapped pixel shaders on the console the first time
-  (~10-40 ms each, in the background); they should become PC-built cache variants.
+- The heaviest late levels run at about 21-27 fps, limited by the CPU (about 280 % of the 300 % available).
 
 ### License
 
