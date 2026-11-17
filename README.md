@@ -55,8 +55,8 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
 
 6. Recommended: lighter engine settings in the game's own config, for the fights. In the heaviest late-level fight
    (same fight, 540p, PGO build) the worst second went from 20 to 23 fps, the 1 % low from 15 to about 20 fps, and
-   the seconds under 25 fps from 10 % to 4 %. The cost: no dynamic shadows, cheaper particle effects and character
-   meshes, less debris. The config (`Coalesced.ini`) is XOR-obfuscated; `tools/switch/coalesced_ini.py` decodes,
+   the seconds under 25 fps from 10 % to 2 %. The cost: no dynamic shadows, cheaper particle effects and character
+   meshes, less debris, no high-detail props and effects (`DetailMode=1`), no blood or bullet marks (`DynamicDecals`). The config (`Coalesced.ini`) is XOR-obfuscated; `tools/switch/coalesced_ini.py` decodes,
    edits and re-encodes it (`decode` / `encode` / `set`), and the game loads the edited file as is:
 
    ```bash
@@ -67,6 +67,8 @@ git, Python 3, CMake 3.25+, Ninja, clang-20, Docker; `dxc` and `spirv-val` from 
      'Xe-TransEngine.ini:[SystemSettings]:DynamicShadows=False' \
      'Xe-TransEngine.ini:[SystemSettings]:SkeletalMeshLODBias=1' \
      'Xe-TransEngine.ini:[SystemSettings]:ParticleLODBias=1' \
+     'Xe-TransEngine.ini:[SystemSettings]:DetailMode=1' \
+     'Xe-TransEngine.ini:[SystemSettings]:DynamicDecals=False' \
      'Xe-TransGame.ini:[HM_Engine.HmDebrisPool]:_MaxActiveDebris=20' \
      'Xe-TransGame.ini:[HM_Engine.HmDebrisPool]:_MaxDebrisSpawnsPerFrame=2'
    ```
