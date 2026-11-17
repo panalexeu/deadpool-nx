@@ -7,7 +7,8 @@
 Nintendo Switch port of the Xbox 360 version of Deadpool (2013), built by static recompilation with rexglue-sdk and
 drawn by a native deko3d renderer.
 
-> **Status:** work in progress. The NRO, the shader library and its DKSH cache build;
+> **Status:** alpha. The game is already playable, but it runs poorly: fight scenes drop as low as
+> 18 fps, and some rendering issues may remain.
 
 It reuses the Unreal Engine 3 on Switch stack of [singularity-nx](https://github.com/panalexeu/singularity-nx)
 (itself from [gears2-nx](https://github.com/VasilkovND/gears2-nx)), adapted to Deadpool. The PC version is
@@ -136,7 +137,9 @@ what threads wait on in the kernel, and what each thread did during the frames o
 
 ### Known issues
 
-- The heaviest late levels run at about 21-27 fps, limited by the CPU (about 280 % of the 300 % available).
+- Performance is poor: fight scenes drop to about 18 fps, and the heaviest late levels run at about 21-27 fps,
+  limited by the CPU (about 280 % of the 300 % available).
+- Rendering issues may remain in parts of the game not yet tested.
 
 ### License
 
