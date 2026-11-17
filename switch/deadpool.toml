@@ -7,9 +7,9 @@ deadpool_switch_gpu_mhz = 460
 # clock, set through clkrst as sys-clk does. Uses more battery.
 deadpool_switch_cpu_mhz = 1785
 
-# Scene resolution at startup: 720 (the game's 1280x720) or 540 (960x540, scaled to the screen). Game patch 3, as
-# gears2-nx 1.1.0's 540p mode, plus a 960x540 video mode for the UI and back buffer.
-deadpool_resolution = 540
+# Scene resolution at startup: 720 (the game's 1280x720), 540 (960x540) or 360 (640x360), scaled to the screen. Game patch 3, as
+# gears2-nx 1.1.0's 540p mode, plus a video mode of that size for the UI and back buffer.
+deadpool_resolution = 360
 
 # Never compile a shader variant while playing: one missing from the DKSH cache keeps drawing with the general
 # variant (the same image). A runtime compile took a game core for 30+ s and the sound crackled.

@@ -118,11 +118,12 @@ class DeadpoolApp : public rex::ReXApp {
   void OnPreLaunchModule() override {
     // The 540p scene needs the video mode at 960x540 too, before the game asks for it (gears2-nx 1.1.0): the UI and
     // back buffer are sized from it, the scene from game patch 3 (deadpool_game_patches.cpp).
-    if (REXCVAR_GET(deadpool_resolution) == 540) {
-      REXCVAR_SET(video_mode_width, 960);
-      REXCVAR_SET(video_mode_height, 540);
+    if (const int alto = REXCVAR_GET(deadpool_resolution); alto == 540 || alto == 360) {
+      const int ancho = alto * 16 / 9;  // 960 or 640
+      REXCVAR_SET(video_mode_width, ancho);
+      REXCVAR_SET(video_mode_height, alto);
       // The renderer tells the scene from other targets by its width (GPU time categories, the deferred sky).
-      rex::x360::g_ancho_escena.store(960, std::memory_order_relaxed);
+      rex::x360::g_ancho_escena.store(ancho, std::memory_order_relaxed);
     }
     REXLOG_INFO("deadpool: scene {}p", REXCVAR_GET(deadpool_resolution));
     deadpool::cpu::Configurar();

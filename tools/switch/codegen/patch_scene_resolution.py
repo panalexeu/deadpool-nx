@@ -23,7 +23,7 @@ import sys
 FUNC = "DEFINE_REX_FUNC(sub_829D6808)"
 MARK = "// DEADPOOL SCENE"
 P = r"(?:ctx\.|L_)"
-DECL = f'extern "C" int DeadpoolGamePatch(int id);  {MARK}\n'
+DECL = f'extern "C" int DeadpoolSceneHeight();  {MARK}\n'
 
 
 def patch(lines):
@@ -32,7 +32,7 @@ def patch(lines):
         return 0, None
     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("DEFINE_REX_FUNC")), len(lines))
     j = {}
-    for want in ("li r11,720", "lfs f13,-8232(r10)", "li r11,1280"):
+    for want in ("li r11,720", "lfs f13,-8232(r10)", "li r11,900", "li r11,1280"):
         found = [i for i in range(start + 1, end) if lines[i].strip() == f"// {want}"]
         if len(found) != 1:
             return 0, f"'// {want}' found {len(found)} times in sub_829D6808"
@@ -48,12 +48,17 @@ def patch(lines):
             and re.fullmatch(r"temp\.u32 = REX_LOAD_U32\(" + P + r"r10\.u32 \+ -8232\);", lfs[1])
             and re.fullmatch(P + r"f13\.f64 = double\(temp\.f32\);", lfs[2])):
         return 0, f"'lfs f13,-8232(r10)' body {lfs!r}"
+    li900 = lines[j["li r11,900"] + 1].strip()
+    if not re.fullmatch(P + r"r11\.s64 = 900;", li900):
+        return 0, f"'li r11,900' body {li900!r}"
     if not re.fullmatch(P + r"r11\.s64 = 1280;", li1280):
         return 0, f"'li r11,1280' body {li1280!r}"
-    new720 = li720.replace("= 720;", "= DeadpoolGamePatch(3) ? 540 : 720;")
+    # DeadpoolSceneHeight(): 720, 540 or 360; the width cap is the 16:9 width, and the 900 minimum width drops to it.
+    new720 = li720.replace("= 720;", "= DeadpoolSceneHeight();")
     newlfs = lfs[0] + " " + lfs[1] + " " + lfs[2].replace(
-        "double(temp.f32);", "double(DeadpoolGamePatch(3) ? 540.0f : temp.f32);")
-    new1280 = li1280.replace("= 1280;", "= DeadpoolGamePatch(3) ? 960 : 1280;")
+        "double(temp.f32);", "double(DeadpoolSceneHeight() == 720 ? temp.f32 : float(DeadpoolSceneHeight()));")
+    new900 = li900.replace("= 900;", "= DeadpoolSceneHeight() == 720 ? 900 : DeadpoolSceneHeight() * 16 / 9;")
+    new1280 = li1280.replace("= 1280;", "= DeadpoolSceneHeight() * 16 / 9;")
 
     def put(idx, count, text):
         indent = re.match(r"\s*", lines[idx + 1]).group(0)
@@ -61,6 +66,7 @@ def patch(lines):
 
     # Last site first: a replacement shifts the later indexes.
     put(j["li r11,1280"], 1, new1280)
+    put(j["li r11,900"], 1, new900)
     put(j["lfs f13,-8232(r10)"], 3, newlfs)
     put(j["li r11,720"], 1, new720)
     return 1, None

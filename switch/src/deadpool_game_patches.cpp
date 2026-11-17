@@ -11,13 +11,19 @@
 #include <rex/cvar.h>
 
 REXCVAR_DEFINE_INT32(deadpool_resolution, 720, "Deadpool",
-                     "Scene resolution at startup: 720 (1280x720, the game's) or 540 (960x540, about 56% of the "
-                     "pixel work; game patch 3 plus a 960x540 video mode)")
-    .allowed({"720", "540"});
+                     "Scene resolution at startup: 720 (1280x720, the game's), 540 (960x540, about 56% of the "
+                     "pixel work) or 360 (640x360, 25%); game patch 3 plus a video mode of that size")
+    .allowed({"720", "540", "360"});
 
 extern "C" int DeadpoolGamePatch(int id) {
   switch (id) {
-    case 3: return REXCVAR_GET(deadpool_resolution) == 540;
+    case 3: return REXCVAR_GET(deadpool_resolution) != 720;
     default: return 0;
   }
+}
+
+// Game patch 3's scene height (720 = the game's own).
+extern "C" int DeadpoolSceneHeight() {
+  const int h = REXCVAR_GET(deadpool_resolution);
+  return h == 540 || h == 360 ? h : 720;
 }
