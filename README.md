@@ -7,8 +7,9 @@
 Nintendo Switch port of the Xbox 360 version of Deadpool (2013), built by static recompilation with rexglue-sdk and
 drawn by a native deko3d renderer.
 
-> **Status:** alpha. The game is already playable, but it runs poorly: fight scenes drop as low as
-> 18 fps, and some rendering issues may remain.
+> **Status:** alpha, playable. With the lighter engine config (step 6), the heaviest late-level fight holds about
+> 29 fps on average (the game caps at 30), with the worst second at 24-25 fps; without it, fights drop to about
+> 18 fps. Some rendering issues may remain.
 
 It reuses the Unreal Engine 3 on Switch stack of [singularity-nx](https://github.com/panalexeu/singularity-nx)
 (itself from [gears2-nx](https://github.com/VasilkovND/gears2-nx)), adapted to Deadpool. The PC version is
@@ -154,14 +155,34 @@ what threads wait on in the kernel, and what each thread did during the frames o
   - **2 MB pages** for the game's memory and code (SDK `0017`): in the same fight the worst second went from 23 to
     25 fps.
   - **PGO** (`PGO=generate` / `PGO=use` in `build-native.sh`, `tools/switch/pgo_merge.sh`): about +10 % fps in the heaviest late level (24.6 → 27.0 fps), which is CPU-bound.
+  - **Lighter engine config** (step 6): no dynamic shadows, cheaper particles and character meshes, less debris, no
+    high-detail props or hit decals. In the same fight the seconds under 25 fps went from 10 % to 0-2 %.
+  - Tried and left off: pinning the main thread to core 0 (starved movie decoding and texture streaming: stuttering
+    intros, blurry levels) and arguments in registers (`FASTARGS=1` in the register pass: no measurable gain).
 - Tools:
   - the profiler (`deadpool_perfil`, `perf_report.py`);
-  - frame dumps (`nfsmw_dk_volcado_saltar` skips a frame's first N copies).
+  - frame dumps (`nfsmw_dk_volcado_saltar` skips a frame's first N copies);
+  - the config tool (`coalesced_ini.py`: decodes, edits and re-encodes the XOR-obfuscated `Coalesced.ini`);
+  - shader capture (`deadpool_capturar_shaders`: writes shader containers the library lacks, such as Bink's);
+  - `localregs.sh`: reruns the register pass alone from the snapshot `codegen.sh` keeps.
+
+### What this port changes (outline)
+
+- **Generated code** (`tools/switch/codegen/`): singularity-nx's and gears2-nx's passes (switch traps, memory
+  barriers, spin hints, leaf prologues, stack accesses, inlinable calls, registers in locals), plus game patch 3
+  (the 540p scene).
+- **Native replacements** (`switch/src/deadpool_perf_hooks.cpp`): Direct3D's GPU and query waits sleep instead of
+  spinning; memcpy, memset, the SDK copy and fill, the D3D constant copy, the XAudio2 filters and the LZX
+  decompressor run as native code; the shader capture hook.
+- **Renderer and runtime:** SDK patches `0001`-`0017` (table above); the game side in `switch/src/` (clears with
+  the rectangle's vertex colour, GPU ring logging, the profiler cvar, PGO stream writer).
+- **Game data:** the lighter `Coalesced.ini` (step 6) and the Bink shaders added to the shader library.
 
 ### Known issues
 
-- Performance is poor without the lighter config (step 6): fight scenes drop to about 18 fps, and the heaviest late levels run at about 21-27 fps,
-  limited by the CPU (about 280 % of the 300 % available).
+- Fights are limited by the game's main thread (game logic and actor updates, about 80-90 % of a core in the
+  heaviest fight; the HUD's Scaleform scripts are about 14 % of it). Without the lighter config (step 6) they drop to
+  about 18 fps.
 - Rendering issues may remain in parts of the game not yet tested.
 
 ### License
