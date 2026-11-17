@@ -47,3 +47,5 @@ deadpool_audio_filtro_nativo = false
 # gives the bottleneck per 10 s (GPU-bound / CPU-bound on which thread), the functions that spend each thread's CPU,
 # the cores' load and what each thread did during the stalls. ZL+ZR+R turns the stack samples on and off in game.
 deadpool_perfil = false
+# Write shader containers the library lacks to capturas_shaders/ (for the PC shader pipeline).
+deadpool_capturar_shaders = false

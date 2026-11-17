@@ -325,6 +325,46 @@ REX_HOOK_RAW(sub_823BB2B8) {
   __imp__sub_823BB2B8(ctx, base);
 }
 
+// sub_82D9C9C8 is Direct3D's shader container parser (r3 the container: virtual part of U32(+4) bytes, then the
+// microcode, U32(+8) bytes); every shader the game or Bink creates goes through it. With deadpool_capturar_shaders, a
+// container the library does not know is written once to capturas_shaders/ as {vs,ps}_<xxh3>.bin (the extractor's
+// names) for the PC shader pipeline. Bink assembles its YUV shaders at run time, so they were in no file: this is how
+// they were found. Kept to catch any other shader built at run time.
+REXCVAR_DEFINE_BOOL(deadpool_capturar_shaders, false, "Deadpool",
+                    "Write each shader container the library lacks to capturas_shaders/ (once each; for the PC pipeline)");
+
+REX_EXTERN(__imp__sub_82D9C9C8);
+REX_HOOK_RAW(sub_82D9C9C8) {
+  if (REXCVAR_GET(deadpool_capturar_shaders)) {
+    const uint32_t c = ctx.r3.u32;
+    auto u32 = [&](uint32_t a) { return rex::memory::load_and_swap<uint32_t>(base + a); };
+    const uint32_t magia = c ? u32(c) : 0, virtual_ = c ? u32(c + 4) : 0, fisica = c ? u32(c + 8) : 0;
+    if ((magia & 0xFFFFFF00u) == 0x102A1100u && virtual_ >= 0x24 && virtual_ < 0x10000 && fisica && fisica < 0x100000) {
+      const std::span<const uint8_t> contenedor(base + c, virtual_ + fisica);
+      if (!deadpool::shaders::Global().PorContenedor(contenedor)) {
+        static std::mutex candado;
+        static std::unordered_set<uint64_t> vistos;
+        const uint64_t h = XXH3_64bits(contenedor.data(), contenedor.size());
+        std::lock_guard<std::mutex> l(candado);
+        if (vistos.size() < 256 && vistos.insert(h).second) {
+          const auto carpeta = rex::filesystem::GetExecutableFolder() / "capturas_shaders";
+          std::error_code ec;
+          std::filesystem::create_directories(carpeta, ec);
+          char nombre[48];
+          std::snprintf(nombre, sizeof(nombre), "%s_%016llx.bin", contenedor[3] ? "vs" : "ps",
+                        static_cast<unsigned long long>(h));
+          if (FILE* f = std::fopen((carpeta / nombre).string().c_str(), "wb")) {
+            std::fwrite(contenedor.data(), 1, contenedor.size(), f);
+            std::fclose(f);
+          }
+          REXLOG_INFO("[capturas] {} ({} + {} bytes): not in the library, written", nombre, virtual_, fisica);
+        }
+      }
+    }
+  }
+  __imp__sub_82D9C9C8(ctx, base);
+}
+
 // sub_8312AF68  a state-variable filter of the game's audio mixer (XAudio2), Singularity's sub_828EDF78 there ~20% of
 //               its audio thread in busy scenes. Its parameters at r3: +0 input samples, +4 output samples, +8 / +12
 //               pointers to the low and band states, +16 sample count, +24 mode, +28 the frequency coefficient f, +32
